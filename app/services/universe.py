@@ -1,15 +1,31 @@
 from __future__ import annotations
 
 import json
+import logging
+
 from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import MarketSnapshot
 from app.selector import normalize_markets
 
+logger = logging.getLogger(__name__)
+
+SKIP_TICKER_PREFIXES = ("KXMVE",)
+
+
+def is_skippable_ticker(ticker: str) -> bool:
+    if not ticker:
+        return True
+    return ticker.startswith(SKIP_TICKER_PREFIXES)
+
 
 def persist_markets(raw_markets: list[dict]) -> int:
-    markets = normalize_markets(raw_markets)
+    skipped_combo = sum(1 for m in raw_markets if is_skippable_ticker(str(m.get("ticker") or "")))
+    markets = [m for m in raw_markets if not is_skippable_ticker(str(m.get("ticker") or ""))]
+    logger.info(f"universe_filter skipped_combo={skipped_combo} kept={len(markets)}")
+    markets = normalize_markets(markets)
+
     with SessionLocal() as db:
         for market in markets:
             row = db.execute(select(MarketSnapshot).where(MarketSnapshot.ticker == market["ticker"])).scalar_one_or_none()
@@ -28,4 +44,6 @@ def persist_markets(raw_markets: list[dict]) -> int:
             row.last_price = float(market.get("last_price") or 0.0)
             row.raw_json = json.dumps(market)
         db.commit()
+
+    logger.info(f"persist_markets saved={len(markets)}")
     return len(markets)
