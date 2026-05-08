@@ -13,6 +13,7 @@ from app.config import settings
 from app.db import SessionLocal, init_db
 from app.engine import TradingEngine
 from app.models import AuditRun, CandidateRun, MarketSnapshot, OrderRecord, PositionSnapshot, ResearchNote
+from app.observability import configure_logging
 from app.schemas import ResearchNoteCreate
 from app.strategy import BANKROLL_RULES, CATEGORIES, TUNING
 
@@ -22,6 +23,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     init_db()
     await engine.start()
     yield

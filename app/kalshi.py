@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -12,6 +14,8 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from app.cache import TTLCache
 from app.config import settings
 from app.strategy import TUNING
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,6 +27,7 @@ class AuthStatus:
 class KalshiClient:
     def __init__(self) -> None:
         self.base_url = settings.kalshi_api_base_url
+        self._base_path = urlsplit(self.base_url).path.rstrip("/")
         self.key_id = settings.kalshi_api_key_id
         self.private_key_pem = settings.kalshi_private_key_pem
         self.client = httpx.AsyncClient(timeout=20.0)
@@ -33,7 +38,8 @@ class KalshiClient:
         if not self.key_id or not self.private_key_pem:
             return {}
         ts = str(int(time.time() * 1000))
-        payload = f"{ts}{method.upper()}{path}".encode()
+        full_path = f"{self._base_path}{path}"
+        payload = f"{ts}{method.upper()}{full_path}".encode()
         private_key = serialization.load_pem_private_key(self.private_key_pem.encode(), password=None)
         signature = private_key.sign(payload, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH), hashes.SHA256())
         return {"KALSHI-ACCESS-KEY": self.key_id, "KALSHI-ACCESS-TIMESTAMP": ts, "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode()}
@@ -42,9 +48,11 @@ class KalshiClient:
         response = await self.client.request(method, f"{self.base_url}{path}", params=params, json=json, headers=self._sign(method, path))
         if response.status_code == 401:
             self.auth_status = AuthStatus(ok=False, reason="401 Unauthorized")
+            logger.info("kalshi_auth_status ok=%s reason=%s", self.auth_status.ok, self.auth_status.reason)
             return {}
         response.raise_for_status()
-        self.auth_status = AuthStatus(ok=True, reason="")
+        self.auth_status = AuthStatus(ok=True, reason="ok")
+        logger.info("kalshi_auth_status ok=%s reason=%s", self.auth_status.ok, self.auth_status.reason)
         return response.json()
 
     async def get_open_markets(self, limit: int | None = None) -> list[dict[str, Any]]:
