@@ -78,6 +78,7 @@ class TradingEngine:
         saved = persist_markets(markets)
         self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
         self.state.last_run_metrics["last_sync_saved"] = saved
+        logger.info("sync_markets fetched=%d saved=%d auth_ok=%s", len(markets), saved, self.kalshi.auth_status.ok)
 
     async def _manual_notes(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -101,6 +102,7 @@ class TradingEngine:
     async def run_cycle(self) -> None:
         raw_markets = await self.kalshi.get_open_markets()
         markets = normalize_markets(raw_markets)
+        logger.info("run_cycle raw=%d normalized=%d auth_ok=%s", len(raw_markets), len(markets), self.kalshi.auth_status.ok)
         note_map = await self._manual_notes()
         positions = await self.kalshi.get_positions()
         self.state.auth_ok = self.kalshi.auth_status.ok
@@ -168,8 +170,10 @@ class TradingEngine:
 
         self.state.last_cycle_at = datetime.now(timezone.utc).isoformat()
         self.state.last_run_metrics["candidate_count"] = len(candidates)
+        logger.info("run_cycle_done candidates=%d", self.state.last_run_metrics.get("candidate_count", 0))
 
     async def reconcile(self) -> None:
+        logger.info("reconcile_start")
         positions = await self.kalshi.get_positions()
         self.state.auth_ok = self.kalshi.auth_status.ok
         with SessionLocal() as db:
