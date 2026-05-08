@@ -12,8 +12,14 @@ class Base(DeclarativeBase):
     pass
 
 
-Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
-engine = create_engine(f"sqlite:///{settings.database_path}", future=True)
+def _db_url() -> str:
+    if settings.database_url:
+        return settings.database_url
+    Path(settings.database_path).parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{settings.database_path}"
+
+
+engine = create_engine(_db_url(), future=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
