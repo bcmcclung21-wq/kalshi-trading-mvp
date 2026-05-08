@@ -10,6 +10,7 @@ from sqlalchemy import desc, select
 from app.classifier import detect_category, normalized_market
 from app.db import SessionLocal
 from app.kalshi import KalshiClient
+from app.state import EngineState
 from app.models import AuditRun, CandidateRun, OrderBookSnapshot, PositionSnapshot, ResearchNote
 from app.risk import category_exposure_ok, duplicate_ticker_ok
 from app.selector import build_candidate, combo_pool, normalize_markets, rank_candidates, single_pool
@@ -19,16 +20,6 @@ from app.services.universe import persist_markets
 from app.strategy import TUNING
 
 logger = logging.getLogger(__name__)
-
-
-class EngineState:
-    def __init__(self) -> None:
-        self.last_sync_at: str | None = None
-        self.last_cycle_at: str | None = None
-        self.last_reconcile_at: str | None = None
-        self.last_audit_at: str | None = None
-        self.last_error: str | None = None
-        self.last_run_metrics: dict = {}
 
 
 class TradingEngine:
@@ -112,6 +103,7 @@ class TradingEngine:
         markets = normalize_markets(raw_markets)
         note_map = await self._manual_notes()
         positions = await self.kalshi.get_positions()
+        self.state.auth_ok = self.kalshi.auth_status.ok
         position_rows = [
             {"ticker": str(p.get("ticker") or ""), "category": detect_category(p), "status": str(p.get("status") or "open")}
             for p in positions
@@ -149,7 +141,9 @@ class TradingEngine:
                 candidates.append(candidate)
 
             ranked = rank_candidates(candidates)[: TUNING.max_orders_per_cycle]
-            bankroll_usd = float((await self.kalshi.get_balance()).get("balance") or 1000.0)
+            if not self.kalshi.auth_status.ok:
+                ranked = []
+            bankroll_usd = float((await self.kalshi.get_balance()).get("balance") or 1000.0) if self.kalshi.auth_status.ok else 1000.0
             for candidate in ranked:
                 db.add(
                     CandidateRun(
@@ -177,6 +171,7 @@ class TradingEngine:
 
     async def reconcile(self) -> None:
         positions = await self.kalshi.get_positions()
+        self.state.auth_ok = self.kalshi.auth_status.ok
         with SessionLocal() as db:
             for row in positions:
                 db.add(
@@ -239,6 +234,7 @@ class TradingEngine:
                     "last_audit_at": self.state.last_audit_at,
                     "last_error": self.state.last_error,
                     "metrics": self.state.last_run_metrics,
+                    "auth_ok": self.state.auth_ok,
                     "auto_execute": TUNING.auto_execute,
                     "allow_combos": TUNING.allow_combos,
                 },
