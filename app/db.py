@@ -1,13 +1,17 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+Base = declarative_base()
 
 def _db_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()
-    if not url:
-        raise RuntimeError("DATABASE_URL is not set")
 
-    # Railway/Postgres URLs sometimes come through as postgres://
+    # No Postgres configured -> use local SQLite fallback
+    if not url:
+        return "sqlite:///./app.db"
+
+    # Normalize legacy postgres URLs if they come back later
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg2://", 1)
     elif url.startswith("postgresql://") and "+psycopg2" not in url and "+psycopg" not in url:
@@ -15,22 +19,18 @@ def _db_url() -> str:
 
     return url
 
-def _create_engine():
-    url = _db_url()
-    try:
-        return create_engine(
-            url,
-            future=True,
-            pool_pre_ping=True,
-        )
-    except ModuleNotFoundError as exc:
-        if exc.name == "psycopg2":
-            raise RuntimeError(
-                "PostgreSQL driver missing. Install psycopg2-binary and rebuild the container."
-            ) from exc
-        raise
+DATABASE_URL = _db_url()
 
-engine = _create_engine()
+connect_args = {}
+if DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+
+engine = create_engine(
+    DATABASE_URL,
+    future=True,
+    pool_pre_ping=True,
+    connect_args=connect_args,
+)
 
 SessionLocal = sessionmaker(
     autocommit=False,
@@ -40,5 +40,5 @@ SessionLocal = sessionmaker(
 )
 
 def init_db():
-    from app.models import Base
+    import app.models  # registers model metadata
     Base.metadata.create_all(bind=engine)
