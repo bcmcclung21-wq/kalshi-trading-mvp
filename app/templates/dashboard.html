@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kalshi Scalable MVP</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <h1>Kalshi Scalable MVP</h1>
+      <p>Singles-first, research-assisted, bankroll-disciplined trading dashboard.</p>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <h2>System Summary</h2>
+        <pre id="summary">{{ summary | tojson(indent=2) }}</pre>
+      </article>
+
+      <article class="card">
+        <h2>Strategy</h2>
+        <ul>
+          {% for category in categories %}
+          <li>{{ category }}</li>
+          {% endfor %}
+        </ul>
+        <h3>Bankroll Rules</h3>
+        <ul>
+          {% for legs, pct in bankroll_rules.items() %}
+          <li>{{ legs }} leg(s): {{ "%.2f"|format(pct * 100) }}%</li>
+          {% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Add Research Note</h2>
+      <form method="post" action="/research-notes" class="note-form">
+        <input name="category" placeholder="category" required>
+        <input name="ticker" placeholder="ticker (optional)">
+        <input name="projection_score" type="number" step="0.1" min="0" max="100" placeholder="projection" required>
+        <input name="research_score" type="number" step="0.1" min="0" max="100" placeholder="research" required>
+        <input name="confidence_score" type="number" step="0.1" min="0" max="100" placeholder="confidence" required>
+        <input name="confirmation_score" type="number" step="0.1" min="0" max="100" placeholder="confirmation" required>
+        <input name="ev_bonus" type="number" step="0.1" min="0" max="15" placeholder="ev bonus">
+        <textarea name="rationale" placeholder="Why this market is strong" required></textarea>
+        <button type="submit">Save note</button>
+      </form>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
