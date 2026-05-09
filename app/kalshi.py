@@ -34,6 +34,7 @@ class KalshiClient:
         self.private_key_pem = settings.kalshi_private_key_pem
         self.client = httpx.AsyncClient(timeout=20.0)
         self.cache = TTLCache()
+        self._inflight_requests: dict[str, asyncio.Task] = {}
         self.auth_status = AuthStatus(ok=bool(self.key_id and self.private_key_pem), reason="missing credentials")
 
     def _sign(self, method: str, path: str) -> dict[str, str]:
@@ -46,7 +47,10 @@ class KalshiClient:
         signature = private_key.sign(payload, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH), hashes.SHA256())
         return {"KALSHI-ACCESS-KEY": self.key_id, "KALSHI-ACCESS-TIMESTAMP": ts, "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode()}
 
-    async def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json: dict[str, Any] | None = None, timeout: float = 20.0) -> dict[str, Any]:
+    def _request_key(self, method: str, path: str, params: dict[str, Any] | None, json: dict[str, Any] | None) -> str:
+        return f"{method.upper()}|{path}|{tuple(sorted((params or {}).items()))}|{tuple(sorted((json or {}).items()))}"
+
+    async def _request_once(self, method: str, path: str, *, params: dict[str, Any] | None = None, json: dict[str, Any] | None = None, timeout: float = 20.0) -> dict[str, Any]:
         max_attempts = 4
         base_delay = 0.4
         for attempt in range(max_attempts):
@@ -72,24 +76,50 @@ class KalshiClient:
             return response.json()
         return {}
 
+    async def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json: dict[str, Any] | None = None, timeout: float = 20.0) -> dict[str, Any]:
+        key = self._request_key(method, path, params, json)
+        existing = self._inflight_requests.get(key)
+        if existing:
+            return await existing
+        task = asyncio.create_task(self._request_once(method, path, params=params, json=json, timeout=timeout))
+        self._inflight_requests[key] = task
+        try:
+            return await task
+        finally:
+            if self._inflight_requests.get(key) is task:
+                self._inflight_requests.pop(key, None)
+
     async def get_all_open_markets(self) -> list[dict[str, Any]]:
         cached = self.cache.get("markets:open")
         if cached is not None:
             return list(cached)
         out: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
+        page = 0
+        t0 = time.perf_counter()
         while True:
+            if cursor:
+                if cursor in seen_cursors:
+                    logger.error("duplicate_cursor_detected cursor=%s", cursor)
+                    raise RuntimeError("pagination_safety_break_triggered")
+                seen_cursors.add(cursor)
             params: dict[str, Any] = {"status": "open", "limit": 1000}
             if cursor:
                 params["cursor"] = cursor
             payload = await self._request("GET", "/markets", params=params)
             markets = list(payload.get("markets") or [])
             out.extend(markets)
+            page += 1
+            logger.info("pagination_page page=%d batch=%d total=%d cursor=%s", page, len(markets), len(out), cursor or "")
+            if page > 100:
+                raise RuntimeError("pagination_safety_break_triggered")
             next_cursor = payload.get("cursor")
             if not next_cursor:
                 break
             cursor = str(next_cursor)
         self.cache.set("markets:open", out, ttl_seconds=TUNING.market_cache_ttl_sec)
+        logger.info("pagination_complete total_markets=%d pages=%d duration=%.2f", len(out), page, time.perf_counter() - t0)
         return out
 
     async def get_open_markets(self, limit: int | None = None) -> list[dict[str, Any]]:

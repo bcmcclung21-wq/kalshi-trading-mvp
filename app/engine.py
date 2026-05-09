@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import date, datetime, timezone
 
@@ -31,8 +32,12 @@ class TradingEngine:
         self._last_audit_date: str | None = None
         self._failure_count = 0
         self._trading_disabled_until = 0.0
+        self._market_sync_lock = asyncio.Lock()
+        self._engine_cycle_lock = asyncio.Lock()
+        self.instance_id = f"{id(self)}"
 
     async def start(self) -> None:
+        logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
         self._tasks = [
             asyncio.create_task(self.market_sync_loop()),
             asyncio.create_task(self.trade_cycle_loop()),
@@ -81,11 +86,22 @@ class TradingEngine:
             logger.exception("engine_loop_error", extra={"fn": getattr(fn, "__name__", "unknown")})
 
     async def sync_markets(self) -> None:
-        markets = await self.kalshi.get_open_markets()
-        saved = persist_markets(markets)
-        self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
-        self.state.last_run_metrics["last_sync_saved"] = saved
-        logger.info("sync_markets fetched=%d saved=%d auth_ok=%s", len(markets), saved, self.kalshi.auth_status.ok)
+        if self._market_sync_lock.locked():
+            logger.warning("market_sync_skipped reason=lock_active")
+            return
+        async with self._market_sync_lock:
+            markets = await self.kalshi.get_open_markets()
+            saved = persist_markets(markets)
+            self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
+            self.state.last_run_metrics["last_sync_saved"] = saved
+            logger.info("sync_markets fetched=%d saved=%d auth_ok=%s", len(markets), saved, self.kalshi.auth_status.ok)
+
+    async def _with_cycle_lock(self, fn_name: str, fn) -> None:
+        if self._engine_cycle_lock.locked():
+            logger.warning("%s_skipped reason=already_running", fn_name)
+            return
+        async with self._engine_cycle_lock:
+            await fn()
 
     async def _manual_notes(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -107,6 +123,9 @@ class TradingEngine:
         return out
 
     async def run_cycle(self) -> None:
+        await self._with_cycle_lock("cycle", self._run_cycle_inner)
+
+    async def _run_cycle_inner(self) -> None:
         if self._trading_disabled_until > time.time():
             logger.warning("circuit_breaker_blocked remaining_sec=%d", int(self._trading_disabled_until - time.time()))
             return
@@ -207,6 +226,9 @@ class TradingEngine:
         )
 
     async def reconcile(self) -> None:
+        await self._with_cycle_lock("reconcile", self._reconcile_inner)
+
+    async def _reconcile_inner(self) -> None:
         logger.info("reconcile_start")
         positions = await self.kalshi.get_positions()
         self.state.auth_ok = self.kalshi.auth_status.ok
@@ -227,6 +249,9 @@ class TradingEngine:
         self.state.last_reconcile_at = datetime.now(timezone.utc).isoformat()
 
     async def run_daily_audit(self) -> None:
+        await self._with_cycle_lock("audit", self._run_daily_audit_inner)
+
+    async def _run_daily_audit_inner(self) -> None:
         settlements = await self.kalshi.get_settlements()
         prepared = []
         for row in settlements:
