@@ -5,6 +5,7 @@ import asyncio
 import logging
 import random
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,6 +23,9 @@ from app.services.market_ingestion import AdaptiveRateLimiter
 logger = logging.getLogger(__name__)
 
 
+ORDERBOOK_BATCH_SIZE = 20
+ORDERBOOK_URL_MAX_LEN = 6000
+
 @dataclass
 class AuthStatus:
     ok: bool
@@ -34,7 +38,7 @@ class KalshiClient:
         self._base_path = urlsplit(self.base_url).path.rstrip("/")
         self.key_id = settings.kalshi_api_key_id
         self.private_key_pem = settings.kalshi_private_key_pem
-        self.client = httpx.AsyncClient(timeout=20.0)
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=20.0, write=20.0, pool=5.0))
         self.cache = TTLCache()
         self._inflight_requests: dict[str, asyncio.Task] = {}
         self.auth_status = AuthStatus(ok=bool(self.key_id and self.private_key_pem), reason="missing credentials")
@@ -215,13 +219,72 @@ class KalshiClient:
     async def get_orderbooks(self, tickers: list[str], depth: int = 25) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         clean = [t for t in dict.fromkeys(tickers) if t]
-        for i in range(0, len(clean), 100):
-            chunk = clean[i:i+100]
+        if not clean:
+            return out
+
+        failure_streak = 0
+        recovery_count = 0
+        failed_tickers = 0
+        batch_sizes: list[int] = []
+        url_lengths: list[int] = []
+
+        i = 0
+        while i < len(clean):
+            chunk_size = min(ORDERBOOK_BATCH_SIZE, len(clean) - i)
+            chunk = clean[i:i + chunk_size]
+            while chunk_size > 1:
+                est_url_len = len(f"{self.base_url}/markets/orderbooks?tickers={','.join(chunk)}&depth={depth}")
+                if est_url_len <= ORDERBOOK_URL_MAX_LEN:
+                    break
+                chunk_size = max(1, chunk_size // 2)
+                chunk = clean[i:i + chunk_size]
             params = {"tickers": ",".join(chunk), "depth": depth}
-            payload = await self._request("GET", "/markets/orderbooks", params=params)
-            books = payload.get("orderbooks") or payload.get("markets") or []
-            for row in books:
-                ticker = str(row.get("ticker") or "")
-                if ticker:
-                    out[ticker] = row
+            req_id = str(uuid.uuid4())[:8]
+            est_url_len = len(f"{self.base_url}/markets/orderbooks?tickers={params['tickers']}&depth={depth}")
+            logger.info("orderbook_batch_start req_id=%s chunk_size=%d est_url_len=%d", req_id, len(chunk), est_url_len)
+            batch_sizes.append(len(chunk))
+            url_lengths.append(est_url_len)
+            try:
+                payload = await self._request("GET", "/markets/orderbooks", params=params, timeout=20.0)
+                books = payload.get("orderbooks") or payload.get("markets") or []
+                for row in books:
+                    ticker = str(row.get("ticker") or "")
+                    if ticker:
+                        out[ticker] = row
+                logger.info("orderbook_batch_success req_id=%s returned=%d", req_id, len(books))
+                failure_streak = 0
+            except httpx.HTTPStatusError as exc:
+                failure_streak += 1
+                logger.warning("orderbook_batch_failed req_id=%s status=%s chunk_size=%d", req_id, exc.response.status_code if exc.response else None, len(chunk))
+                if exc.response is not None and exc.response.status_code == 400:
+                    for ticker in chunk:
+                        logger.info("orderbook_single_retry ticker=%s", ticker)
+                        try:
+                            payload = await self._request("GET", "/markets/orderbooks", params={"tickers": ticker, "depth": depth}, timeout=10.0)
+                            books = payload.get("orderbooks") or payload.get("markets") or []
+                            if books:
+                                out[ticker] = books[0]
+                                recovery_count += 1
+                            else:
+                                failed_tickers += 1
+                                logger.warning("orderbook_invalid_ticker ticker=%s reason=empty_response", ticker)
+                        except Exception:
+                            failed_tickers += 1
+                            logger.warning("orderbook_invalid_ticker ticker=%s reason=request_failed", ticker)
+                    logger.info("orderbook_partial_recovery req_id=%s recovered=%d failed=%d", req_id, recovery_count, failed_tickers)
+                if failure_streak >= 3:
+                    logger.warning("orderbook_circuit_breaker_open cooldown_sec=30")
+                    await asyncio.sleep(30)
+                    failure_streak = 0
+            except Exception:
+                failure_streak += 1
+                logger.exception("orderbook_batch_failed req_id=%s status=exception", req_id)
+            i += chunk_size
+
+        avg_batch = (sum(batch_sizes) / len(batch_sizes)) if batch_sizes else 0
+        avg_url = (sum(url_lengths) / len(url_lengths)) if url_lengths else 0
+        logger.info(
+            "orderbook_final_summary requested=%d returned=%d failed_tickers=%d recovered=%d avg_batch_size=%.2f avg_url_len=%.2f",
+            len(clean), len(out), failed_tickers, recovery_count, avg_batch, avg_url
+        )
         return out
