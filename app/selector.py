@@ -10,7 +10,6 @@ from app.research import build_research_envelope
 from app.strategy import SPORTS, TUNING
 
 
-
 def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
     """Strict validation for Kalshi orderbooks."""
 
@@ -30,12 +29,11 @@ def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
     return True
 
 
-
-
-
 def has_market_liquidity(market: dict[str, Any]) -> bool:
     """Deprecated: metadata liquidity fields are intentionally ignored."""
     return True
+
+
 def validate_market_candidate(market: dict[str, Any], orderbook: dict[str, Any]) -> tuple[bool, str]:
     """Centralized validation gate."""
 
@@ -75,6 +73,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "wrong_category": 0,
         "no_liquidity_sign": 0,
         "too_close_to_close": 0,
+        "packaged_market": 0,
     }
     valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
     for market in markets:
@@ -83,6 +82,9 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             continue
         if market.get("category") not in valid_categories:
             rejects["wrong_category"] += 1
+            continue
+        if is_packaged_market(market):
+            rejects["packaged_market"] += 1
             continue
         minutes = market.get("minutes_to_close")
         if minutes is not None and minutes < TUNING.min_minutes_to_close:
@@ -170,6 +172,8 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
     market = normalized_market(market)
     if market["market_type"] == "combo" and (not TUNING.allow_combos or market["category"] != SPORTS):
         return None, "unsupported_combo"
+    if market["market_type"] == "single" and is_packaged_market(market):
+        return None, "packaged_market"
     quote = _best_quote_side(orderbook)
     if quote is None:
         return None, "invalid_orderbook"
