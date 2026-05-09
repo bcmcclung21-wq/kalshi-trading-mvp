@@ -1,30 +1,3 @@
-# === Packaged-market detection shim ===
-# Detects KXMVE-prefixed and other packaged/event-bundle markets that should
-# be skipped during universe filtering. Additive only - safe to append.
-
-_PACKAGED_PREFIXES = (
-    "KXMVE",   # movie / event bundle markets
-    "KXBUNDLE",
-    "KXPKG",
-)
-
-def is_packaged_market(market) -> bool:
-    """Return True if the market is a packaged/bundle market that should be
-    excluded from singleton-ticker trading. Accepts dict or ticker string."""
-    if market is None:
-        return False
-    if isinstance(market, str):
-        ticker = market
-    elif isinstance(market, dict):
-        ticker = str(market.get("ticker") or market.get("market_ticker") or "")
-    else:
-        ticker = str(getattr(market, "ticker", "") or "")
-    if not ticker:
-        return False
-    ticker_upper = ticker.upper()
-    return any(ticker_upper.startswith(p) for p in _PACKAGED_PREFIXES)
-
-
 from __future__ import annotations
 
 from typing import Dict, Optional
@@ -35,7 +8,7 @@ CRYPTO_HINTS = {"bitcoin", "btc", "ethereum", "eth", "solana", "sol", "xrp", "cr
 ECONOMICS_HINTS = {"cpi", "ppi", "fed", "fomc", "rate", "gdp", "unemployment", "jobs", "nfp", "inflation", "yield"}
 CLIMATE_HINTS = {"temperature", "rain", "snow", "hurricane", "storm", "weather", "wildfire", "drought", "climate"}
 
-# Ticker prefix → category. Authoritative map. Expand here, never inline.
+# Ticker prefix -> category. Authoritative map. Expand here, never inline.
 TICKER_PREFIX_MAP: Dict[str, str] = {
     # sports
     "KXNBA": "sports",
@@ -76,6 +49,13 @@ TICKER_PREFIX_MAP: Dict[str, str] = {
     "KXSTORM": "climate",
 }
 
+# Packaged / bundle market prefixes - excluded from singleton trading.
+_PACKAGED_PREFIXES = (
+    "KXMVE",      # movie / event bundle markets
+    "KXBUNDLE",
+    "KXPKG",
+)
+
 
 def detect_category(ticker: Optional[str], title: Optional[str] = None) -> str:
     """Return one of: sports, politics, crypto, economics, climate, unknown."""
@@ -101,10 +81,29 @@ def detect_category(ticker: Optional[str], title: Optional[str] = None) -> str:
     return "unknown"
 
 
+def is_packaged_market(market) -> bool:
+    """Return True if the market is a packaged/bundle market that should be
+    excluded from singleton-ticker trading. Accepts dict, ticker string, or
+    object with a `ticker` attribute."""
+    if market is None:
+        return False
+    if isinstance(market, str):
+        ticker = market
+    elif isinstance(market, dict):
+        ticker = str(market.get("ticker") or market.get("market_ticker") or "")
+    else:
+        ticker = str(getattr(market, "ticker", "") or "")
+    if not ticker:
+        return False
+    ticker_upper = ticker.upper()
+    return any(ticker_upper.startswith(p) for p in _PACKAGED_PREFIXES)
+
+
 def normalized_market(market: dict) -> dict:
-    """Attach category to a market dict without mutating caller's reference."""
+    """Attach category and packaged flag to a market dict without mutating caller's reference."""
     out = dict(market or {})
     out["category"] = detect_category(out.get("ticker"), out.get("title") or out.get("event_title"))
+    out["is_packaged"] = is_packaged_market(out)
     return out
 
 
