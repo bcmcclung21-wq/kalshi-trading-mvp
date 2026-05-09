@@ -10,6 +10,59 @@ from app.research import build_research_envelope
 from app.strategy import SPORTS, TUNING
 
 
+MIN_LIQUIDITY = 25
+MIN_OPEN_INTEREST = 10
+MIN_VOLUME_24H = 25
+
+
+def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
+    """Strict validation for Kalshi orderbooks."""
+
+    if not orderbook:
+        return False
+
+    yes_bids = orderbook.get("yes_bids") or orderbook.get("yes") or []
+    yes_asks = orderbook.get("yes_asks") or []
+    no_bids = orderbook.get("no_bids") or orderbook.get("no") or []
+    no_asks = orderbook.get("no_asks") or []
+
+    if not yes_bids and not yes_asks:
+        return False
+    if not no_bids and not no_asks:
+        return False
+
+    return True
+
+
+def has_market_liquidity(market: dict[str, Any]) -> bool:
+    """Reject illiquid markets early."""
+
+    liquidity = float(market.get("liquidity") or 0)
+    volume_24h = float(market.get("volume_24h") or 0)
+    open_interest = float(market.get("open_interest") or 0)
+
+    if liquidity < MIN_LIQUIDITY:
+        return False
+    if volume_24h < MIN_VOLUME_24H:
+        return False
+    if open_interest < MIN_OPEN_INTEREST:
+        return False
+
+    return True
+
+
+def validate_market_candidate(market: dict[str, Any], orderbook: dict[str, Any]) -> tuple[bool, str]:
+    """Centralized validation gate."""
+
+    if not has_market_liquidity(market):
+        return False, "insufficient_liquidity"
+
+    if not has_valid_orderbook(orderbook):
+        return False, "invalid_orderbook"
+
+    return True, "valid"
+
+
 @dataclass(slots=True)
 class Candidate:
     ticker: str
