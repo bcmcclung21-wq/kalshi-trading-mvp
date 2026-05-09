@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
+from collections import defaultdict
 from typing import Any
 
 from app.classifier import normalized_market, is_packaged_market
@@ -64,13 +66,52 @@ def combo_pool(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def diversified_pool(markets: list[dict[str, Any]], max_total: int, per_category: int) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for market in markets:
+        grouped[str(market.get("category") or "unknown")].append(market)
+    out: list[dict[str, Any]] = []
+    categories = list(grouped.keys())
+    random.shuffle(categories)
+    for category in categories:
+        bucket = grouped[category]
+        random.shuffle(bucket)
+        out.extend(bucket[:per_category])
+    random.shuffle(out)
+    return out[:max_total]
+
+
+def _extract_prices(levels: list[Any]) -> list[float]:
+    out: list[float] = []
+    for level in levels or []:
+        if not isinstance(level, dict):
+            continue
+        try:
+            price = float(level.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if 0.0 < price < 1.0:
+            out.append(price)
+    return out
+
+
+def best_bid(levels: list[Any]) -> float:
+    prices = _extract_prices(levels)
+    return max(prices) if prices else 0.0
+
+
+def best_ask(levels: list[Any]) -> float:
+    prices = _extract_prices(levels)
+    return min(prices) if prices else 0.0
+
+
 def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | None:
     yes = list(orderbook.get("yes") or [])
     no = list(orderbook.get("no") or [])
-    yes_bid = float((yes[0] or {}).get("price") or 0.0) if yes else 0.0
-    yes_ask = float((yes[-1] or {}).get("price") or 0.0) if yes else 0.0
-    no_bid = float((no[0] or {}).get("price") or 0.0) if no else 0.0
-    no_ask = float((no[-1] or {}).get("price") or 0.0) if no else 0.0
+    yes_bid = best_bid(yes)
+    yes_ask = best_ask(yes)
+    no_bid = best_bid(no)
+    no_ask = best_ask(no)
     if yes_ask <= 0 and no_ask <= 0:
         return None
     yes_spread = max(0.0, (yes_ask - yes_bid) * 100) if yes_ask and yes_bid else 999.0
@@ -84,18 +125,18 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
     return None
 
 
-def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_note: dict[str, Any] | None = None) -> Candidate | None:
+def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_note: dict[str, Any] | None = None) -> tuple[Candidate | None, str | None]:
     market = normalized_market(market)
     if market["market_type"] == "combo" and (not TUNING.allow_combos or market["category"] != SPORTS):
-        return None
+        return None, "unsupported_combo"
     quote = _best_quote_side(orderbook)
     if quote is None:
-        return None
+        return None, "invalid_orderbook"
     side, entry_price, spread_cents = quote
     if spread_cents > TUNING.max_spread_cents:
-        return None
+        return None, "bad_spread"
     if entry_price <= 0 or entry_price >= 0.95:
-        return None
+        return None, "bad_price"
 
     envelope = build_research_envelope(
         market=market,
@@ -114,11 +155,11 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
     )
     threshold = TUNING.min_total_score_combo if market["market_type"] == "combo" else TUNING.min_total_score_single
     if envelope.projection_score < TUNING.min_projection_score:
-        return None
+        return None, "failed_projection"
     if envelope.confidence_score < TUNING.min_confidence_score:
-        return None
+        return None, "low_confidence"
     if total_score < threshold:
-        return None
+        return None, "low_total_score"
     return Candidate(
         ticker=market["ticker"],
         category=str(market.get("category") or "unknown"),
@@ -140,7 +181,7 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
             "open_interest": market.get("open_interest"),
             "minutes_to_close": market.get("minutes_to_close"),
         },
-    )
+    ), None
 
 
 def rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
