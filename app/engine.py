@@ -15,7 +15,7 @@ from app.kalshi import KalshiClient
 from app.state import EngineState
 from app.models import AuditRun, CandidateRun, OrderBookSnapshot, PositionSnapshot, ResearchNote
 from app.risk import category_exposure_ok, duplicate_ticker_ok
-from app.selector import best_ask, best_bid, build_candidate, combo_pool, diversified_pool, normalize_markets, rank_candidates, single_pool
+from app.selector import best_ask, best_bid, build_candidate, combo_pool, diversified_pool, normalize_markets, rank_candidates, single_pool, validate_market_candidate
 from app.services.audit import summarize_settlements
 from app.services.execution import execute_candidate
 from app.services.universe import persist_markets
@@ -249,6 +249,11 @@ class TradingEngine:
             for market, book in zip(pool, orderbooks):
                 if isinstance(book, Exception):
                     logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), "orderbook_fetch_error")
+                    rejected += 1
+                    continue
+                is_valid, validation_reason = validate_market_candidate(market, book)
+                if not is_valid:
+                    logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), validation_reason)
                     rejected += 1
                     continue
                 manual_note = note_map.get(market["ticker"]) or note_map.get(f"category:{market['category']}")
