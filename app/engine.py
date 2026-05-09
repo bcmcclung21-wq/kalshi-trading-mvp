@@ -102,7 +102,19 @@ class TradingEngine:
             if not await self.breakers.market_fetch_breaker.allow():
                 logger.warning("market_sync_skipped reason=breaker_open")
                 return
-            markets = await self.kalshi.get_open_markets() if self.mode == EngineMode.BOOT else list(self.market_cache.snapshot().values())
+            if self.mode == EngineMode.BOOT:
+                markets = await self.kalshi.get_open_markets()
+                markets_source = "boot_fetch"
+            else:
+                cached = list(self.market_cache.snapshot().values())
+                if cached:
+                    markets = cached
+                    markets_source = "cache"
+                else:
+                    logger.warning("sync_markets_cache_empty falling_back_to_fetch")
+                    markets = await self.kalshi.get_open_markets()
+                    markets_source = "fallback_fetch"
+            logger.info("sync_markets_source=%s count=%d", markets_source, len(markets))
             api_round_trip_ok = self.mode != EngineMode.BOOT or self.kalshi.last_paginate_pages > 0
             strategy_tickers: set[str] = set()
             position_tickers = {str(p.get("ticker") or "") for p in await self.kalshi.get_positions()}
@@ -170,10 +182,55 @@ class TradingEngine:
             for p in positions
         ]
 
-        pool = single_pool(markets)
+        from collections import Counter
+
+        cat_counter = Counter(str(m.get("category") or "missing") for m in markets)
+        type_counter = Counter(str(m.get("market_type") or "missing") for m in markets)
+        logger.info("market_categories_seen %s", dict(cat_counter.most_common(10)))
+        logger.info("market_types_seen %s", dict(type_counter.most_common(5)))
+
+        volumes = [float(m.get("volume") or 0.0) for m in markets]
+        ois = [float(m.get("open_interest") or 0.0) for m in markets]
+        if volumes:
+            v_sorted = sorted(volumes)
+            o_sorted = sorted(ois)
+            n = len(v_sorted)
+            p50 = lambda xs: xs[n // 2] if n else 0.0
+            p90 = lambda xs: xs[(n * 9) // 10] if n else 0.0
+            p99 = lambda xs: xs[(n * 99) // 100] if n else 0.0
+            logger.info(
+                "market_liquidity_distribution n=%d vol_p50=%.1f vol_p90=%.1f vol_p99=%.1f oi_p50=%.1f oi_p90=%.1f oi_p99=%.1f",
+                n, p50(v_sorted), p90(v_sorted), p99(v_sorted),
+                p50(o_sorted), p90(o_sorted), p99(o_sorted),
+            )
+
+        pool, single_rejects = single_pool(markets)
+        logger.info(
+            "single_pool_result kept=%d wrong_type=%d wrong_cat=%d low_vol=%d low_oi=%d too_close=%d",
+            len(pool),
+            single_rejects["wrong_market_type"],
+            single_rejects["wrong_category"],
+            single_rejects["low_volume"],
+            single_rejects["low_open_interest"],
+            single_rejects["too_close_to_close"],
+        )
+
+        if single_rejects["wrong_category"] > 0:
+            unknowns = [m for m in markets if m.get("category") not in {"sports", "politics", "crypto", "climate", "economics"}]
+            sample = unknowns[:5]
+            for m in sample:
+                logger.info(
+                    "unknown_category_sample ticker=%s event=%s title=%s subtitle=%s",
+                    str(m.get("ticker") or "")[:60],
+                    str(m.get("event_ticker") or "")[:40],
+                    str(m.get("title") or "")[:80],
+                    str(m.get("subtitle") or "")[:80],
+                )
+
         if TUNING.allow_combos:
             pool.extend(combo_pool(markets))
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
+        logger.info("pool_after_diversify count=%d", len(pool))
 
         t_books = time.perf_counter()
         orderbooks = await asyncio.gather(*[self.kalshi.get_orderbook(m["ticker"]) for m in pool], return_exceptions=True)
