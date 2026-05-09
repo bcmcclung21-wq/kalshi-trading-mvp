@@ -1,39 +1,69 @@
 #!/usr/bin/env python3
+"""Fail if any tracked Python/text file contains non-ASCII bytes.
+
+iOS auto-correct can substitute curly quotes, em-dashes, and other
+non-ASCII characters when files are edited or pasted on iPhone. This
+script is the last line of defense before such characters reach
+production. Run before every push.
+
+Exit code 0 = clean. Exit code 1 = non-ASCII found.
+"""
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
-EXCLUDE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+ROOT = Path(__file__).resolve().parent.parent
+SCAN_DIRS = ["app", "alembic", "tests", "scripts"]
+SUFFIXES = {".py", ".md", ".txt", ".yaml", ".yml", ".ini", ".toml"}
 
 
-def iter_files(root: Path):
-    for path in root.rglob("*"):
-        if path.is_dir():
+def scan_file(path: Path) -> list[tuple[int, int, int, str]]:
+    out: list[tuple[int, int, int, str]] = []
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return out
+    line_no = 1
+    col = 0
+    line_start = 0
+    for i, b in enumerate(data):
+        if b == 0x0A:
+            line_no += 1
+            col = 0
+            line_start = i + 1
             continue
-        if any(part in EXCLUDE_DIRS for part in path.parts):
-            continue
-        yield path
+        col += 1
+        if b > 127:
+            line_end = data.find(b"\n", i)
+            if line_end < 0:
+                line_end = len(data)
+            line_text = data[line_start:line_end].decode("utf-8", errors="replace")
+            out.append((line_no, col, b, line_text))
+    return out
 
 
 def main() -> int:
-    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
-    bad: list[str] = []
-    for file in iter_files(root):
-        try:
-            data = file.read_bytes()
-        except Exception:
+    bad = 0
+    for d in SCAN_DIRS:
+        base = ROOT / d
+        if not base.exists():
             continue
-        if any(b > 127 for b in data):
-            bad.append(str(file.relative_to(root)))
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix not in SUFFIXES:
+                continue
+            for line_no, col, byte_val, line_text in scan_file(path):
+                rel = path.relative_to(ROOT)
+                print(f"{rel}:{line_no}:{col}: non-ASCII byte 0x{byte_val:02x} in: {line_text.strip()[:120]}")
+                bad += 1
     if bad:
-        print("Non-ASCII bytes found:")
-        for f in bad:
-            print(f" - {f}")
+        print(f"\nFAIL: {bad} non-ASCII byte(s) found. Likely iOS smart-quote corruption.", file=sys.stderr)
         return 1
-    print("ASCII check passed")
+    print("OK: all scanned files are pure ASCII.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
