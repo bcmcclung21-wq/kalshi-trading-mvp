@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import SessionLocal
 from app.liquidity import LiquidityConfig, LiquiditySnapshot, RollingMarketState, profile_liquidity
@@ -19,10 +19,12 @@ class LiquidityEngine:
         self.active_liquid_markets: set[str] = set()
         self.inactive_markets: set[str] = set()
         self.stale_markets: set[str] = set()
-        self.load_state()
 
     def load_state(self) -> None:
         with SessionLocal() as db:
+            inspector = inspect(db.bind)
+            if not inspector.has_table(MarketMicrostructureState.__tablename__):
+                return
             rows = db.execute(select(MarketMicrostructureState)).scalars().all()
             for row in rows:
                 self.market_state[row.ticker] = RollingMarketState(
@@ -36,12 +38,6 @@ class LiquidityEngine:
                     execution_score=row.execution_score,
                     volatility_score=row.volatility_score,
                 )
-                if row.status == "active":
-                    self.active_liquid_markets.add(row.ticker)
-                elif row.status == "stale":
-                    self.stale_markets.add(row.ticker)
-                else:
-                    self.inactive_markets.add(row.ticker)
 
     def evaluate(self, ticker: str, orderbook: dict[str, Any]) -> LiquiditySnapshot | None:
         state = self.market_state.setdefault(ticker, RollingMarketState())
@@ -66,18 +62,21 @@ class LiquidityEngine:
         return snap
 
     def persist_state(self) -> None:
-        with SessionLocal() as db:
-            for ticker, state in self.market_state.items():
-                row = db.get(MarketMicrostructureState, ticker) or MarketMicrostructureState(ticker=ticker)
-                row.spread_history_json = json.dumps(state.spread_history[-50:])
-                row.midpoint_history_json = json.dumps(state.midpoint_history[-50:])
-                row.liquidity_history_json = json.dumps(state.liquidity_history[-50:])
-                row.fill_probability = state.fill_probability
-                row.replenishment_rate = state.replenishment_rate
-                row.last_seen = state.last_seen
-                row.stale_cycles = state.stale_cycles
-                row.execution_score = state.execution_score
-                row.volatility_score = state.volatility_score
-                row.status = "active" if ticker in self.active_liquid_markets else ("stale" if ticker in self.stale_markets else "inactive")
-                db.merge(row)
-            db.commit()
+        try:
+            with SessionLocal() as db:
+                for ticker, state in self.market_state.items():
+                    row = db.get(MarketMicrostructureState, ticker) or MarketMicrostructureState(ticker=ticker)
+                    row.spread_history_json = json.dumps(state.spread_history[-50:])
+                    row.midpoint_history_json = json.dumps(state.midpoint_history[-50:])
+                    row.liquidity_history_json = json.dumps(state.liquidity_history[-50:])
+                    row.fill_probability = state.fill_probability
+                    row.replenishment_rate = state.replenishment_rate
+                    row.last_seen = state.last_seen
+                    row.stale_cycles = state.stale_cycles
+                    row.execution_score = state.execution_score
+                    row.volatility_score = state.volatility_score
+                    row.status = "active" if ticker in self.active_liquid_markets else ("stale" if ticker in self.stale_markets else "inactive")
+                    db.merge(row)
+                db.commit()
+        except SQLAlchemyError:
+            return
