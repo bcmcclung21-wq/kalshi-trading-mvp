@@ -39,6 +39,8 @@ class KalshiClient:
         self.auth_status = AuthStatus(ok=bool(self.key_id and self.private_key_pem), reason="missing credentials")
         self.rate_limiter = AdaptiveRateLimiter()
         self.rate_limiter.configure_endpoint("GET:/markets", rate=8, capacity=20, concurrency=4)
+        self.last_paginate_pages = 0
+        self.last_paginate_kept = 0
 
     def _sign(self, method: str, path: str) -> dict[str, str]:
         if not self.key_id or not self.private_key_pem:
@@ -99,6 +101,8 @@ class KalshiClient:
     async def get_all_open_markets(self) -> list[dict[str, Any]]:
         cached = self.cache.get("markets:open")
         if cached is not None:
+            self.last_paginate_pages = 0
+            self.last_paginate_kept = len(cached)
             return list(cached)
         target_kept = TUNING.max_markets_per_sync
         page_limit = 200
@@ -151,6 +155,8 @@ class KalshiClient:
                 )
                 break
 
+        self.last_paginate_pages = pages
+        self.last_paginate_kept = len(kept)
         self.cache.set("markets:open", kept, ttl_seconds=TUNING.market_cache_ttl_sec)
         logger.info(
             "kalshi_paginate_done pages=%d kept=%d target=%d",
