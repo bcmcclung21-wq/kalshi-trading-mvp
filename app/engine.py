@@ -190,28 +190,37 @@ class TradingEngine:
         logger.info("market_types_seen %s", dict(type_counter.most_common(5)))
 
         volumes = [float(m.get("volume") or 0.0) for m in markets]
+        vols_24h = [float(m.get("volume_24h") or 0.0) for m in markets]
+        liqs = [float(m.get("liquidity") or 0.0) for m in markets]
         ois = [float(m.get("open_interest") or 0.0) for m in markets]
         if volumes:
-            v_sorted = sorted(volumes)
-            o_sorted = sorted(ois)
-            n = len(v_sorted)
-            p50 = lambda xs: xs[n // 2] if n else 0.0
-            p90 = lambda xs: xs[(n * 9) // 10] if n else 0.0
-            p99 = lambda xs: xs[(n * 99) // 100] if n else 0.0
+            n = len(volumes)
+
+            def pct(xs, p):
+                if not xs:
+                    return 0.0
+                ys = sorted(xs)
+                return ys[min(n - 1, (n * p) // 100)]
+
             logger.info(
-                "market_liquidity_distribution n=%d vol_p50=%.1f vol_p90=%.1f vol_p99=%.1f oi_p50=%.1f oi_p90=%.1f oi_p99=%.1f",
-                n, p50(v_sorted), p90(v_sorted), p99(v_sorted),
-                p50(o_sorted), p90(o_sorted), p99(o_sorted),
+                "market_liquidity_distribution n=%d "
+                "vol_lifetime_p50=%.1f p99=%.1f "
+                "vol_24h_p50=%.1f p99=%.1f "
+                "liquidity_p50=%.1f p99=%.1f "
+                "oi_p50=%.1f p99=%.1f",
+                n, pct(volumes, 50), pct(volumes, 99),
+                pct(vols_24h, 50), pct(vols_24h, 99),
+                pct(liqs, 50), pct(liqs, 99),
+                pct(ois, 50), pct(ois, 99),
             )
 
         pool, single_rejects = single_pool(markets)
         logger.info(
-            "single_pool_result kept=%d wrong_type=%d wrong_cat=%d low_vol=%d low_oi=%d too_close=%d",
+            "single_pool_result kept=%d wrong_type=%d wrong_cat=%d no_liq=%d too_close=%d",
             len(pool),
             single_rejects["wrong_market_type"],
             single_rejects["wrong_category"],
-            single_rejects["low_volume"],
-            single_rejects["low_open_interest"],
+            single_rejects["no_liquidity_sign"],
             single_rejects["too_close_to_close"],
         )
 

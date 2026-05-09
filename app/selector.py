@@ -38,8 +38,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
     rejects = {
         "wrong_market_type": 0,
         "wrong_category": 0,
-        "low_volume": 0,
-        "low_open_interest": 0,
+        "no_liquidity_sign": 0,
         "too_close_to_close": 0,
     }
     valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
@@ -50,11 +49,11 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if market.get("category") not in valid_categories:
             rejects["wrong_category"] += 1
             continue
-        if float(market.get("volume") or 0.0) < TUNING.min_volume:
-            rejects["low_volume"] += 1
-            continue
-        if float(market.get("open_interest") or 0.0) < TUNING.min_open_interest:
-            rejects["low_open_interest"] += 1
+        liquidity = float(market.get("liquidity") or 0.0)
+        volume_24h = float(market.get("volume_24h") or 0.0)
+        open_interest = float(market.get("open_interest") or 0.0)
+        if liquidity <= 0.0 and volume_24h <= 0.0 and open_interest <= 0.0:
+            rejects["no_liquidity_sign"] += 1
             continue
         minutes = market.get("minutes_to_close")
         if minutes is not None and minutes < TUNING.min_minutes_to_close:
