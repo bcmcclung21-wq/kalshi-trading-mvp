@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -18,6 +18,11 @@ class CircuitBreaker:
     failure_threshold: int = 5
     half_open_success_threshold: int = 3
     open_timeout_sec: float = 10.0
+    state: BreakerState = field(default=BreakerState.CLOSED, init=False)
+    failures: int = field(default=0, init=False)
+    successes: int = field(default=0, init=False)
+    open_until: float = field(default=0.0, init=False)
+    _lock: asyncio.Lock = field(init=False)
 
     def __post_init__(self) -> None:
         self.state = BreakerState.CLOSED
