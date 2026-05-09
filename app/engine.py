@@ -103,6 +103,7 @@ class TradingEngine:
                 logger.warning("market_sync_skipped reason=breaker_open")
                 return
             markets = await self.kalshi.get_open_markets() if self.mode == EngineMode.BOOT else list(self.market_cache.snapshot().values())
+            api_round_trip_ok = self.mode != EngineMode.BOOT or self.kalshi.last_paginate_pages > 0
             strategy_tickers: set[str] = set()
             position_tickers = {str(p.get("ticker") or "") for p in await self.kalshi.get_positions()}
             self.discovery.reconcile_registry(markets, strategy_tickers=strategy_tickers, position_tickers=position_tickers)
@@ -111,6 +112,9 @@ class TradingEngine:
             await self.pipeline.run_once()
             saved = persist_markets(markets)
             await self.breakers.market_fetch_breaker.record_success()
+            if api_round_trip_ok or len(markets) > 0:
+                self._failure_count = 0
+                self._trading_disabled_until = 0.0
             if self.mode == EngineMode.BOOT:
                 self.mode = EngineMode.LIVE
             self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
