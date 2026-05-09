@@ -25,22 +25,23 @@ class RuntimeTuning:
     audit_interval_sec: int = 300
     daily_audit_hour_utc: int = 12
 
-    min_volume: float = 50.0
-    min_open_interest: float = 10.0
-    max_spread_cents: float = 12.0
+    min_volume: float = 5.0
+    min_open_interest: float = 2.0
+    max_spread_cents: float = 20.0
     min_minutes_to_close: int = 20
     max_days_to_close: int = 14
 
-    min_projection_score: float = 62.0
-    min_confidence_score: float = 64.0
-    min_total_score_single: float = 74.0
-    min_total_score_combo: float = 84.0
+    min_projection_score: float = 50.0
+    min_confidence_score: float = 50.0
+    min_total_score_single: float = 58.0
+    min_total_score_combo: float = 66.0
 
     max_markets_per_sync: int = 1200
     max_orderbooks_per_cycle: int = 24
-    market_cache_ttl_sec: int = 20
-    orderbook_cache_ttl_sec: int = 6
+    market_cache_ttl_sec: int = 10
+    orderbook_cache_ttl_sec: int = 3
     balance_cache_ttl_sec: int = 10
+    positions_cache_ttl_sec: int = 10
     summary_cache_ttl_sec: int = 5
 
     max_category_exposure_pct: float = 0.30

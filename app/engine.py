@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import date, datetime, timezone
 
 from sqlalchemy import desc, select
@@ -13,7 +14,7 @@ from app.kalshi import KalshiClient
 from app.state import EngineState
 from app.models import AuditRun, CandidateRun, OrderBookSnapshot, PositionSnapshot, ResearchNote
 from app.risk import category_exposure_ok, duplicate_ticker_ok
-from app.selector import build_candidate, combo_pool, normalize_markets, rank_candidates, single_pool
+from app.selector import best_ask, best_bid, build_candidate, combo_pool, diversified_pool, normalize_markets, rank_candidates, single_pool
 from app.services.audit import summarize_settlements
 from app.services.execution import execute_candidate
 from app.services.universe import persist_markets
@@ -28,6 +29,8 @@ class TradingEngine:
         self.state = EngineState()
         self._tasks: list[asyncio.Task] = []
         self._last_audit_date: str | None = None
+        self._failure_count = 0
+        self._trading_disabled_until = 0.0
 
     async def start(self) -> None:
         self._tasks = [
@@ -70,6 +73,10 @@ class TradingEngine:
             await fn()
             self.state.last_error = None
         except Exception as exc:
+            self._failure_count += 1
+            if self._failure_count >= 5:
+                self._trading_disabled_until = time.time() + 120
+                logger.warning("circuit_breaker_open failures=%d cooldown_sec=120", self._failure_count)
             self.state.last_error = str(exc)
             logger.exception("engine_loop_error", extra={"fn": getattr(fn, "__name__", "unknown")})
 
@@ -100,7 +107,15 @@ class TradingEngine:
         return out
 
     async def run_cycle(self) -> None:
-        raw_markets = await self.kalshi.get_open_markets()
+        if self._trading_disabled_until > time.time():
+            logger.warning("circuit_breaker_blocked remaining_sec=%d", int(self._trading_disabled_until - time.time()))
+            return
+        if self._trading_disabled_until and self._trading_disabled_until <= time.time():
+            logger.info("circuit_breaker_closed")
+            self._trading_disabled_until = 0.0
+            self._failure_count = 0
+        t0 = time.perf_counter()
+        raw_markets = await self.kalshi.get_all_open_markets()
         markets = normalize_markets(raw_markets)
         logger.info("run_cycle raw=%d normalized=%d auth_ok=%s", len(raw_markets), len(markets), self.kalshi.auth_status.ok)
         note_map = await self._manual_notes()
@@ -114,28 +129,38 @@ class TradingEngine:
         pool = single_pool(markets)
         if TUNING.allow_combos:
             pool.extend(combo_pool(markets))
-        pool = pool[: TUNING.max_orderbooks_per_cycle]
+        pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
 
+        t_books = time.perf_counter()
         orderbooks = await asyncio.gather(*[self.kalshi.get_orderbook(m["ticker"]) for m in pool], return_exceptions=True)
+        rejected = 0
         candidates = []
         with SessionLocal() as db:
             for market, book in zip(pool, orderbooks):
                 if isinstance(book, Exception):
+                    logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), "orderbook_fetch_error")
+                    rejected += 1
                     continue
                 manual_note = note_map.get(market["ticker"]) or note_map.get(f"category:{market['category']}")
-                candidate = build_candidate(market, book, manual_note=manual_note)
+                candidate, reason = build_candidate(market, book, manual_note=manual_note)
                 if not candidate:
+                    logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), reason or "unknown")
+                    rejected += 1
                     continue
                 if not duplicate_ticker_ok(candidate.ticker, position_rows):
+                    logger.info("candidate_rejected ticker=%s reason=%s", candidate.ticker, "duplicate_market")
+                    rejected += 1
                     continue
                 if not category_exposure_ok(candidate.category, position_rows):
+                    logger.info("candidate_rejected ticker=%s reason=%s", candidate.ticker, "category_exposure")
+                    rejected += 1
                     continue
                 ob = OrderBookSnapshot(
                     ticker=candidate.ticker,
-                    yes_bid=float((book.get("yes") or [{}])[0].get("price") or 0.0) if book.get("yes") else 0.0,
-                    yes_ask=float((book.get("yes") or [{}])[-1].get("price") or 0.0) if book.get("yes") else 0.0,
-                    no_bid=float((book.get("no") or [{}])[0].get("price") or 0.0) if book.get("no") else 0.0,
-                    no_ask=float((book.get("no") or [{}])[-1].get("price") or 0.0) if book.get("no") else 0.0,
+                    yes_bid=best_bid(list(book.get("yes") or [])),
+                    yes_ask=best_ask(list(book.get("yes") or [])),
+                    no_bid=best_bid(list(book.get("no") or [])),
+                    no_ask=best_ask(list(book.get("no") or [])),
                     spread_cents=candidate.spread_cents,
                     raw_json=json.dumps(book),
                 )
@@ -170,7 +195,16 @@ class TradingEngine:
 
         self.state.last_cycle_at = datetime.now(timezone.utc).isoformat()
         self.state.last_run_metrics["candidate_count"] = len(candidates)
-        logger.info("run_cycle_done candidates=%d", self.state.last_run_metrics.get("candidate_count", 0))
+        logger.info(
+            "cycle_summary markets=%d candidates=%d orders=%d rejected=%d api_ms=%d orderbook_ms=%d total_ms=%d",
+            len(markets),
+            len(candidates),
+            min(len(candidates), TUNING.max_orders_per_cycle),
+            rejected,
+            int((t_books - t0) * 1000),
+            int((time.perf_counter() - t_books) * 1000),
+            int((time.perf_counter() - t0) * 1000),
+        )
 
     async def reconcile(self) -> None:
         logger.info("reconcile_start")

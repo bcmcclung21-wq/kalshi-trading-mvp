@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from sqlalchemy import select
 
@@ -11,20 +12,26 @@ from app.selector import normalize_markets
 
 logger = logging.getLogger(__name__)
 
-SKIP_TICKER_PREFIXES = ("KXMVE",)
+SUPPORTED_MARKET_TYPES = {"single", "combo"}
 
 
-def is_skippable_ticker(ticker: str) -> bool:
+def is_supported_market(market: dict[str, Any]) -> bool:
+    if not isinstance(market, dict):
+        return False
+    ticker = str(market.get("ticker") or "").strip()
     if not ticker:
-        return True
-    return ticker.startswith(SKIP_TICKER_PREFIXES)
+        return False
+    market_type = str(market.get("market_type") or "single").strip().lower()
+    if market_type not in SUPPORTED_MARKET_TYPES:
+        return False
+    return True
 
 
 def persist_markets(raw_markets: list[dict]) -> int:
-    skipped_combo = sum(1 for m in raw_markets if is_skippable_ticker(str(m.get("ticker") or "")))
-    markets = [m for m in raw_markets if not is_skippable_ticker(str(m.get("ticker") or ""))]
-    logger.info(f"universe_filter skipped_combo={skipped_combo} kept={len(markets)}")
-    markets = normalize_markets(markets)
+    normalized = normalize_markets(raw_markets)
+    markets = [m for m in normalized if is_supported_market(m)]
+    removed = len(raw_markets) - len(markets)
+    logger.info("universe_filter total=%d kept=%d removed=%d", len(raw_markets), len(markets), removed)
 
     with SessionLocal() as db:
         for market in markets:
@@ -45,5 +52,5 @@ def persist_markets(raw_markets: list[dict]) -> int:
             row.raw_json = json.dumps(market)
         db.commit()
 
-    logger.info(f"persist_markets saved={len(markets)}")
+    logger.info("persist_markets saved=%d", len(markets))
     return len(markets)
