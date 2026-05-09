@@ -43,7 +43,7 @@ connect_args: dict[str, object] = {"connect_timeout": 5} if DATABASE_URL.startsw
 if DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
 
-engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, pool_recycle=1800, pool_timeout=5, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True, class_=Session)
 
 
@@ -95,6 +95,12 @@ def _schema_version() -> str | None:
         return None
 
 
+def verify_required_tables(required: list[str]) -> list[str]:
+    inspector = inspect(engine)
+    existing = set(inspector.get_table_names())
+    return [t for t in required if t not in existing]
+
+
 def init_db() -> BootstrapResult:
     import app.models  # noqa: F401
 
@@ -122,6 +128,9 @@ def init_db() -> BootstrapResult:
             except (ProgrammingError, OperationalError):
                 logger.warning("market_snapshots_text_cast_skipped")
             duration = int((time.perf_counter() - started) * 1000)
+            missing_after = verify_required_tables(expected)
+            if missing_after:
+                logger.warning("db_required_tables_missing tables=%s", missing_after)
             result = BootstrapResult(
                 schema_version=_schema_version(),
                 tables_missing=missing,

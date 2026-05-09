@@ -28,6 +28,11 @@ class MarketSnapshot(Base):
     open_interest: Mapped[float] = mapped_column(Float, default=0.0)
     last_price: Mapped[float] = mapped_column(Float, default=0.0)
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
+    spread: Mapped[float] = mapped_column(Float, default=0.0)
+    imbalance: Mapped[float] = mapped_column(Float, default=0.0)
+    volatility: Mapped[float] = mapped_column(Float, default=0.0)
+    microprice: Mapped[float] = mapped_column(Float, default=0.0)
+    liquidity_score: Mapped[float] = mapped_column(Float, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 

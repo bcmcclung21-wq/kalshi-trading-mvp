@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
@@ -10,22 +11,31 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
 
 from app.config import settings
-from app.db import SessionLocal, init_db
+from app.db import SessionLocal, init_db, verify_required_tables
 from app.engine import TradingEngine
 from app.models import AuditRun, CandidateRun, MarketSnapshot, OrderRecord, PositionSnapshot, ResearchNote
 from app.observability import configure_logging
 from app.schemas import ResearchNoteCreate
 from app.strategy import BANKROLL_RULES, CATEGORIES, TUNING
 
+logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="app/templates")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    logger.info("startup_stage=init_db_begin")
     bootstrap = init_db()
+    required = ["market_microstructure_state"]
+    missing = verify_required_tables(required)
+    if missing:
+        logger.warning("startup_degraded missing_tables=%s", missing)
+    logger.info("startup_stage=engine_init")
     app.state.engine = TradingEngine()
     app.state.db_bootstrap = bootstrap
+    app.state.degraded_mode = bool(missing)
+    logger.info("startup_stage=engine_start")
     await app.state.engine.start()
     yield
     await app.state.engine.stop()

@@ -222,7 +222,11 @@ class TradingEngine:
             pool.extend(combo_pool(markets))
 
         candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(100, TUNING.max_orderbooks_per_cycle * 5)] if m.get("ticker")]
-        batch_books = await self.kalshi.get_orderbooks(candidate_tickers, depth=25)
+        try:
+            batch_books = await self.kalshi.get_orderbooks(candidate_tickers, depth=25)
+        except Exception:
+            logger.exception("orderbook_fetch_unhandled using_partial_data=false")
+            batch_books = {}
         liquidity_rank: list[tuple[float, dict]] = []
         for m in pool:
             t = str(m.get("ticker") or "")
