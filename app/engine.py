@@ -20,7 +20,7 @@ from app.services.audit import summarize_settlements
 from app.services.execution import execute_candidate
 from app.services.universe import persist_markets
 from app.services.market_ingestion import AsyncIngestionPipeline, EngineMode, IngestionMetrics, MarketCache, MarketDiscoveryEngine
-from app.services.microstructure import ActiveUniverse
+from app.services.liquidity_engine import LiquidityEngine
 from app.liquidity import LiquidityConfig
 from app.services.resilience import BreakerRegistry
 from app.strategy import TUNING
@@ -45,8 +45,9 @@ class TradingEngine:
         self.discovery = MarketDiscoveryEngine(ttl_seconds=3600, max_tracked=2_500)
         self.pipeline = AsyncIngestionPipeline(self.market_cache, self.discovery, self.metrics)
         self.breakers = BreakerRegistry()
-        self.active_universe = ActiveUniverse()
-        self.liquidity_cfg = LiquidityConfig()
+        self.liquidity = LiquidityEngine(LiquidityConfig())
+        self._last_discovery_refresh = 0.0
+        self._last_liquidity_refresh = 0.0
 
     async def start(self) -> None:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
@@ -193,31 +194,6 @@ class TradingEngine:
         logger.info("market_categories_seen %s", dict(cat_counter.most_common(10)))
         logger.info("market_types_seen %s", dict(type_counter.most_common(5)))
 
-        volumes = [float(m.get("volume") or 0.0) for m in markets]
-        vols_24h = [float(m.get("volume_24h") or 0.0) for m in markets]
-        liqs = [float(m.get("liquidity") or 0.0) for m in markets]
-        ois = [float(m.get("open_interest") or 0.0) for m in markets]
-        if volumes:
-            n = len(volumes)
-
-            def pct(xs, p):
-                if not xs:
-                    return 0.0
-                ys = sorted(xs)
-                return ys[min(n - 1, (n * p) // 100)]
-
-            logger.info(
-                "market_liquidity_distribution n=%d "
-                "vol_lifetime_p50=%.1f p99=%.1f "
-                "vol_24h_p50=%.1f p99=%.1f "
-                "liquidity_p50=%.1f p99=%.1f "
-                "oi_p50=%.1f p99=%.1f",
-                n, pct(volumes, 50), pct(volumes, 99),
-                pct(vols_24h, 50), pct(vols_24h, 99),
-                pct(liqs, 50), pct(liqs, 99),
-                pct(ois, 50), pct(ois, 99),
-            )
-
         pool, single_rejects = single_pool(markets)
         logger.info(
             "single_pool_result kept=%d wrong_type=%d wrong_cat=%d no_liq=%d too_close=%d",
@@ -243,21 +219,21 @@ class TradingEngine:
         if TUNING.allow_combos:
             pool.extend(combo_pool(markets))
 
-        candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(50, TUNING.max_orderbooks_per_cycle * 4)] if m.get("ticker")]
+        candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(100, TUNING.max_orderbooks_per_cycle * 5)] if m.get("ticker")]
         batch_books = await self.kalshi.get_orderbooks(candidate_tickers, depth=25)
         liquidity_rank: list[tuple[float, dict]] = []
         for m in pool:
             t = str(m.get("ticker") or "")
-            score = self.active_universe.evaluate(t, batch_books.get(t, {}), self.liquidity_cfg)
-            if score > 0:
-                liquidity_rank.append((score, m))
+            snap = self.liquidity.evaluate(t, batch_books.get(t, {}))
+            if snap and snap.liquidity_score > 0:
+                liquidity_rank.append((snap.liquidity_score, m))
         pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
-        logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.active_universe.market_state), len(self.active_universe.active_liquid_markets), len(self.active_universe.inactive_markets), len(self.active_universe.stale_markets))
+        logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.liquidity.market_state), len(self.liquidity.active_liquid_markets), len(self.liquidity.inactive_markets), len(self.liquidity.stale_markets))
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
         logger.info("pool_after_diversify count=%d", len(pool))
 
         t_books = time.perf_counter()
-        orderbooks = await asyncio.gather(*[self.kalshi.get_orderbook(m["ticker"]) for m in pool], return_exceptions=True)
+        orderbooks = [batch_books.get(str(m.get("ticker") or ""), {}) for m in pool]
         rejected = 0
         candidates = []
         with SessionLocal() as db:
@@ -285,12 +261,14 @@ class TradingEngine:
                     logger.info("candidate_rejected ticker=%s reason=%s", candidate.ticker, "category_exposure")
                     rejected += 1
                     continue
+                no_bid_px = best_bid(list(book.get("no") or []))
+                yes_bid_px = best_bid(list(book.get("yes") or []))
                 ob = OrderBookSnapshot(
                     ticker=candidate.ticker,
-                    yes_bid=best_bid(list(book.get("yes") or [])),
-                    yes_ask=best_ask(list(book.get("yes") or [])),
-                    no_bid=best_bid(list(book.get("no") or [])),
-                    no_ask=best_ask(list(book.get("no") or [])),
+                    yes_bid=yes_bid_px,
+                    yes_ask=(1-no_bid_px) if no_bid_px > 0 else 0.0,
+                    no_bid=no_bid_px,
+                    no_ask=(1-yes_bid_px) if yes_bid_px > 0 else 0.0,
                     spread_cents=candidate.spread_cents,
                     raw_json=json.dumps(book),
                 )
@@ -323,6 +301,7 @@ class TradingEngine:
                 await execute_candidate(self.kalshi, db, candidate, bankroll_usd=bankroll_usd)
             db.commit()
 
+        self.liquidity.persist_state()
         self.state.last_cycle_at = datetime.now(timezone.utc).isoformat()
         self.state.last_run_metrics["candidate_count"] = len(candidates)
         logger.info(

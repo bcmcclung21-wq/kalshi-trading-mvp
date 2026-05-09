@@ -52,8 +52,8 @@ def persist_markets(raw_markets: list[dict]) -> int:
             row.market_type = str(market.get("market_type") or "single")
             row.status = str(market.get("status") or "open")
             row.close_time = str(market.get("close_time") or "")
-            row.volume = float(market.get("volume") or 0.0)
-            row.open_interest = float(market.get("open_interest") or 0.0)
+            row.volume = 0.0
+            row.open_interest = 0.0
             row.last_price = float(market.get("last_price") or 0.0)
             row.raw_json = json.dumps(market)
         db.commit()

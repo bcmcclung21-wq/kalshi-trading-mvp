@@ -131,3 +131,20 @@ class AuditRun(Base):
     issues_json: Mapped[str] = mapped_column(Text, default="{}")
     improvements_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class MarketMicrostructureState(Base):
+    __tablename__ = "market_microstructure_state"
+
+    ticker: Mapped[str] = mapped_column(String(128), primary_key=True)
+    spread_history_json: Mapped[str] = mapped_column(Text, default="[]")
+    midpoint_history_json: Mapped[str] = mapped_column(Text, default="[]")
+    liquidity_history_json: Mapped[str] = mapped_column(Text, default="[]")
+    fill_probability: Mapped[float] = mapped_column(Float, default=0.0)
+    replenishment_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    last_seen: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    stale_cycles: Mapped[int] = mapped_column(Integer, default=0)
+    execution_score: Mapped[float] = mapped_column(Float, default=0.0)
+    volatility_score: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(16), default="inactive", index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
