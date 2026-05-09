@@ -17,17 +17,18 @@ from app.observability import configure_logging
 from app.schemas import ResearchNoteCreate
 from app.strategy import BANKROLL_RULES, CATEGORIES, TUNING
 
-engine = TradingEngine()
 templates = Jinja2Templates(directory="app/templates")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    init_db()
-    await engine.start()
+    bootstrap = init_db()
+    app.state.engine = TradingEngine()
+    app.state.db_bootstrap = bootstrap
+    await app.state.engine.start()
     yield
-    await engine.stop()
+    await app.state.engine.stop()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -45,7 +46,7 @@ async def dashboard(request: Request):
         "dashboard.html",
         {
             "request": request,
-            "summary": engine.snapshot_summary(),
+            "summary": request.app.state.engine.snapshot_summary(),
             "settings": settings,
             "categories": CATEGORIES,
             "bankroll_rules": BANKROLL_RULES,
@@ -55,7 +56,7 @@ async def dashboard(request: Request):
 
 @app.get("/api/summary")
 async def api_summary():
-    return engine.snapshot_summary()
+    return app.state.engine.snapshot_summary()
 
 
 @app.get("/api/settings")
@@ -187,9 +188,9 @@ async def create_research_note(note: ResearchNoteCreate):
 
 @app.post("/api/engine/run-once")
 async def run_once():
-    await engine.sync_markets()
-    await engine.run_cycle()
-    await engine.reconcile()
+    await app.state.engine.sync_markets()
+    await app.state.engine.run_cycle()
+    await app.state.engine.reconcile()
     return {"ok": True}
 
 

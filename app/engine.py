@@ -45,12 +45,14 @@ class TradingEngine:
         self.discovery = MarketDiscoveryEngine(ttl_seconds=3600, max_tracked=2_500)
         self.pipeline = AsyncIngestionPipeline(self.market_cache, self.discovery, self.metrics)
         self.breakers = BreakerRegistry()
-        self.liquidity = LiquidityEngine(LiquidityConfig())
+        self.liquidity: LiquidityEngine | None = None
         self._last_discovery_refresh = 0.0
         self._last_liquidity_refresh = 0.0
 
     async def start(self) -> None:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
+        self.liquidity = LiquidityEngine(LiquidityConfig())
+        self.liquidity.load_state()
         self._tasks = [
             asyncio.create_task(self.market_sync_loop()),
             asyncio.create_task(self.trade_cycle_loop()),
@@ -224,11 +226,14 @@ class TradingEngine:
         liquidity_rank: list[tuple[float, dict]] = []
         for m in pool:
             t = str(m.get("ticker") or "")
+            if not self.liquidity:
+                continue
             snap = self.liquidity.evaluate(t, batch_books.get(t, {}))
             if snap and snap.liquidity_score > 0:
                 liquidity_rank.append((snap.liquidity_score, m))
         pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
-        logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.liquidity.market_state), len(self.liquidity.active_liquid_markets), len(self.liquidity.inactive_markets), len(self.liquidity.stale_markets))
+        if self.liquidity:
+            logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.liquidity.market_state), len(self.liquidity.active_liquid_markets), len(self.liquidity.inactive_markets), len(self.liquidity.stale_markets))
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
         logger.info("pool_after_diversify count=%d", len(pool))
 
@@ -301,7 +306,8 @@ class TradingEngine:
                 await execute_candidate(self.kalshi, db, candidate, bankroll_usd=bankroll_usd)
             db.commit()
 
-        self.liquidity.persist_state()
+        if self.liquidity:
+            self.liquidity.persist_state()
         self.state.last_cycle_at = datetime.now(timezone.utc).isoformat()
         self.state.last_run_metrics["candidate_count"] = len(candidates)
         logger.info(
