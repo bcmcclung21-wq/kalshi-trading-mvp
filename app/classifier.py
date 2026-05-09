@@ -12,6 +12,32 @@ POLITICS_HINTS = {"president", "senate", "house", "election", "vote", "approval"
 ECON_HINTS = {"inflation", "cpi", "gdp", "jobs", "unemployment", "fed", "rate", "economy", "recession", "payrolls"}
 PACKAGED_HINTS = {"crosscategory", "multigame", "multimarket", "combo", "parlay", "same game parlay"}
 
+TICKER_PREFIX_CATEGORY = {
+    # sports
+    "KXNFL": "sports", "KXNBA": "sports", "KXMLB": "sports",
+    "KXNHL": "sports", "KXNCAA": "sports", "KXMLS": "sports",
+    "KXEPL": "sports", "KXUFC": "sports", "KXMMA": "sports",
+    "KXBOX": "sports", "KXTENNIS": "sports", "KXATP": "sports",
+    "KXWTA": "sports", "KXGOLF": "sports", "KXPGA": "sports",
+    "KXLPGA": "sports", "KXNASCAR": "sports", "KXF1": "sports",
+    "KXFORMULA": "sports", "KXINDYCAR": "sports", "KXOLY": "sports",
+    "KXFIFA": "sports", "KXWORLDCUP": "sports",
+    # crypto
+    "KXBTC": "crypto", "KXETH": "crypto", "KXSOL": "crypto",
+    "KXXRP": "crypto", "KXDOGE": "crypto", "KXCRYPTO": "crypto",
+    # economics
+    "KXCPI": "economics", "KXJOBS": "economics", "KXGDP": "economics",
+    "KXFED": "economics", "KXFOMC": "economics", "KXNFP": "economics",
+    "KXPCE": "economics", "KXUNEMP": "economics",
+    # politics
+    "KXPRES": "politics", "KXSEN": "politics", "KXHOUSE": "politics",
+    "KXGOV": "politics", "KXELEC": "politics", "KXPOLL": "politics",
+    # climate / weather
+    "KXTEMP": "climate", "KXRAIN": "climate", "KXSNOW": "climate",
+    "KXHURR": "climate", "KXWEATHER": "climate", "KXHIGH": "climate",
+    "KXLOW": "climate",
+}
+
 
 def text_blob(market: dict[str, Any]) -> str:
     return " ".join(str(market.get(k) or "") for k in ("ticker", "title", "subtitle", "event_ticker", "series_ticker", "event_title")).lower()
@@ -21,6 +47,10 @@ def detect_category(market: dict[str, Any]) -> str:
     explicit = str(market.get("category") or "").lower().strip()
     if explicit in CATEGORIES:
         return explicit
+    ticker = str(market.get("ticker") or "").upper()
+    for prefix, cat in TICKER_PREFIX_CATEGORY.items():
+        if ticker.startswith(prefix):
+            return cat
     text = text_blob(market)
     scores = {
         "sports": sum(1 for w in SPORTS_HINTS if w in text),
@@ -92,6 +122,8 @@ def normalized_market(market: dict[str, Any]) -> dict[str, Any]:
     out["event_ticker"] = str(out.get("event_ticker") or "")
     out["status"] = str(out.get("status") or "open")
     out["volume"] = float(out.get("volume") or 0.0)
+    out["volume_24h"] = float(out.get("volume_24h") or 0.0)
+    out["liquidity"] = float(out.get("liquidity") or 0.0)
     out["open_interest"] = float(out.get("open_interest") or out.get("openInterest") or 0.0)
     out["close_time"] = str(out.get("close_time") or out.get("expiration_time") or "")
     out["minutes_to_close"] = minutes_to_close(out)
