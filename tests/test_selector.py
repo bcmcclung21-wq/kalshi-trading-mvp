@@ -28,13 +28,12 @@ def test_has_valid_orderbook_accepts_yes_and_no_sides():
     assert has_valid_orderbook({"yes": [{"price": 0.45}], "no": [{"price": 0.55}]}) is True
 
 
-def test_validate_market_candidate_rejects_illiquid_market():
-    market = {"liquidity": 10, "volume_24h": 5, "open_interest": 1}
+def test_validate_market_candidate_accepts_orderbook_even_when_metadata_zero():
+    market = {"liquidity": 0, "volume_24h": 0, "open_interest": 0}
     valid, reason = validate_market_candidate(market, {"yes": [{"price": 0.4}], "no": [{"price": 0.6}]})
-    assert valid is False
-    assert reason == "insufficient_liquidity"
+    assert valid is True
+    assert reason == "valid"
 
 
-def test_has_market_liquidity_thresholds():
-    assert has_market_liquidity({"liquidity": 25, "volume_24h": 25, "open_interest": 10}) is True
-    assert has_market_liquidity({"liquidity": 24.9, "volume_24h": 25, "open_interest": 10}) is False
+def test_has_market_liquidity_metadata_is_ignored():
+    assert has_market_liquidity({"liquidity": 0, "volume_24h": 0, "open_interest": 0}) is True

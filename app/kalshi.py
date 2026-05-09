@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -38,7 +39,9 @@ class KalshiClient:
         self._inflight_requests: dict[str, asyncio.Task] = {}
         self.auth_status = AuthStatus(ok=bool(self.key_id and self.private_key_pem), reason="missing credentials")
         self.rate_limiter = AdaptiveRateLimiter()
-        self.rate_limiter.configure_endpoint("GET:/markets", rate=8, capacity=20, concurrency=4)
+        self.rate_limiter.configure_endpoint("GET:/markets", rate=6, capacity=12, concurrency=3)
+        self.rate_limiter.configure_endpoint("GET:/markets/orderbooks", rate=4, capacity=8, concurrency=2)
+        self.request_semaphore = asyncio.Semaphore(3)
         self.last_paginate_pages = 0
         self.last_paginate_kept = 0
 
@@ -61,7 +64,9 @@ class KalshiClient:
         for attempt in range(max_attempts):
             release = await self.rate_limiter.acquire(endpoint) if endpoint in self.rate_limiter._buckets else None
             try:
-                response = await self.client.request(method, f"{self.base_url}{path}", params=params, json=json, headers=self._sign(method, path), timeout=timeout)
+                async with self.request_semaphore:
+                    await asyncio.sleep(random.uniform(0.02, 0.15))
+                    response = await self.client.request(method, f"{self.base_url}{path}", params=params, json=json, headers=self._sign(method, path), timeout=timeout)
             except httpx.TimeoutException:
                 if attempt == max_attempts - 1:
                     raise
@@ -107,7 +112,7 @@ class KalshiClient:
         target_kept = TUNING.max_markets_per_sync
         page_limit = 200
         max_pages = 80
-        max_consecutive_zero_kept_pages = 3
+        max_consecutive_zero_kept_pages = 2
 
         now_ts = int(time.time())
         min_close_ts = now_ts + (TUNING.min_minutes_to_close * 60)
@@ -148,7 +153,7 @@ class KalshiClient:
             cursor = payload.get("cursor") or None
             if not cursor:
                 break
-            if empty_streak >= max_consecutive_zero_kept_pages:
+            if empty_streak >= max_consecutive_zero_kept_pages and len(kept) < int(target_kept * 0.1):
                 logger.warning(
                     "kalshi_paginate_giving_up empty_streak=%d pages=%d kept=%d reason=consecutive_zero_kept_pages",
                     empty_streak, pages, len(kept),
@@ -205,3 +210,18 @@ class KalshiClient:
 
     async def close(self) -> None:
         await self.client.aclose()
+
+
+    async def get_orderbooks(self, tickers: list[str], depth: int = 25) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        clean = [t for t in dict.fromkeys(tickers) if t]
+        for i in range(0, len(clean), 100):
+            chunk = clean[i:i+100]
+            params = {"tickers": ",".join(chunk), "depth": depth}
+            payload = await self._request("GET", "/markets/orderbooks", params=params)
+            books = payload.get("orderbooks") or payload.get("markets") or []
+            for row in books:
+                ticker = str(row.get("ticker") or "")
+                if ticker:
+                    out[ticker] = row
+        return out

@@ -10,10 +10,6 @@ from app.research import build_research_envelope
 from app.strategy import SPORTS, TUNING
 
 
-MIN_LIQUIDITY = 25
-MIN_OPEN_INTEREST = 10
-MIN_VOLUME_24H = 25
-
 
 def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
     """Strict validation for Kalshi orderbooks."""
@@ -34,28 +30,14 @@ def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
     return True
 
 
+
+
+
 def has_market_liquidity(market: dict[str, Any]) -> bool:
-    """Reject illiquid markets early."""
-
-    liquidity = float(market.get("liquidity") or 0)
-    volume_24h = float(market.get("volume_24h") or 0)
-    open_interest = float(market.get("open_interest") or 0)
-
-    if liquidity < MIN_LIQUIDITY:
-        return False
-    if volume_24h < MIN_VOLUME_24H:
-        return False
-    if open_interest < MIN_OPEN_INTEREST:
-        return False
-
+    """Deprecated: metadata liquidity fields are intentionally ignored."""
     return True
-
-
 def validate_market_candidate(market: dict[str, Any], orderbook: dict[str, Any]) -> tuple[bool, str]:
     """Centralized validation gate."""
-
-    if not has_market_liquidity(market):
-        return False, "insufficient_liquidity"
 
     if not has_valid_orderbook(orderbook):
         return False, "invalid_orderbook"
@@ -102,13 +84,6 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if market.get("category") not in valid_categories:
             rejects["wrong_category"] += 1
             continue
-        liquidity = float(market.get("liquidity") or 0.0)
-        volume_24h = float(market.get("volume_24h") or 0.0)
-        open_interest = float(market.get("open_interest") or 0.0)
-        # Kalshi's /markets payload can return zeros for these aggregate fields even when
-        # a valid orderbook exists. Keep such markets for orderbook-level validation.
-        if liquidity <= 0.0 and volume_24h <= 0.0 and open_interest <= 0.0:
-            rejects["no_liquidity_sign"] += 1
         minutes = market.get("minutes_to_close")
         if minutes is not None and minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1

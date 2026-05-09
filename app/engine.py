@@ -20,6 +20,8 @@ from app.services.audit import summarize_settlements
 from app.services.execution import execute_candidate
 from app.services.universe import persist_markets
 from app.services.market_ingestion import AsyncIngestionPipeline, EngineMode, IngestionMetrics, MarketCache, MarketDiscoveryEngine
+from app.services.microstructure import ActiveUniverse
+from app.liquidity import LiquidityConfig
 from app.services.resilience import BreakerRegistry
 from app.strategy import TUNING
 
@@ -43,6 +45,8 @@ class TradingEngine:
         self.discovery = MarketDiscoveryEngine(ttl_seconds=3600, max_tracked=2_500)
         self.pipeline = AsyncIngestionPipeline(self.market_cache, self.discovery, self.metrics)
         self.breakers = BreakerRegistry()
+        self.active_universe = ActiveUniverse()
+        self.liquidity_cfg = LiquidityConfig()
 
     async def start(self) -> None:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
@@ -171,7 +175,7 @@ class TradingEngine:
             self._trading_disabled_until = 0.0
             self._failure_count = 0
         t0 = time.perf_counter()
-        raw_markets = await self.kalshi.get_all_open_markets()
+        raw_markets = list(self.market_cache.snapshot().values()) or await self.kalshi.get_all_open_markets()
         markets = normalize_markets(raw_markets)
         logger.info("run_cycle raw=%d normalized=%d auth_ok=%s", len(raw_markets), len(markets), self.kalshi.auth_status.ok)
         note_map = await self._manual_notes()
@@ -238,6 +242,17 @@ class TradingEngine:
 
         if TUNING.allow_combos:
             pool.extend(combo_pool(markets))
+
+        candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(50, TUNING.max_orderbooks_per_cycle * 4)] if m.get("ticker")]
+        batch_books = await self.kalshi.get_orderbooks(candidate_tickers, depth=25)
+        liquidity_rank: list[tuple[float, dict]] = []
+        for m in pool:
+            t = str(m.get("ticker") or "")
+            score = self.active_universe.evaluate(t, batch_books.get(t, {}), self.liquidity_cfg)
+            if score > 0:
+                liquidity_rank.append((score, m))
+        pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
+        logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.active_universe.market_state), len(self.active_universe.active_liquid_markets), len(self.active_universe.inactive_markets), len(self.active_universe.stale_markets))
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
         logger.info("pool_after_diversify count=%d", len(pool))
 
