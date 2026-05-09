@@ -52,9 +52,10 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         liquidity = float(market.get("liquidity") or 0.0)
         volume_24h = float(market.get("volume_24h") or 0.0)
         open_interest = float(market.get("open_interest") or 0.0)
+        # Kalshi's /markets payload can return zeros for these aggregate fields even when
+        # a valid orderbook exists. Keep such markets for orderbook-level validation.
         if liquidity <= 0.0 and volume_24h <= 0.0 and open_interest <= 0.0:
             rejects["no_liquidity_sign"] += 1
-            continue
         minutes = market.get("minutes_to_close")
         if minutes is not None and minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1

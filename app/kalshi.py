@@ -107,7 +107,7 @@ class KalshiClient:
         target_kept = TUNING.max_markets_per_sync
         page_limit = 200
         max_pages = 80
-        max_kxmve_pages_in_a_row = 20
+        max_consecutive_zero_kept_pages = 3
 
         now_ts = int(time.time())
         min_close_ts = now_ts + (TUNING.min_minutes_to_close * 60)
@@ -148,9 +148,9 @@ class KalshiClient:
             cursor = payload.get("cursor") or None
             if not cursor:
                 break
-            if empty_streak >= max_kxmve_pages_in_a_row:
+            if empty_streak >= max_consecutive_zero_kept_pages:
                 logger.warning(
-                    "kalshi_paginate_giving_up empty_streak=%d pages=%d kept=%d",
+                    "kalshi_paginate_giving_up empty_streak=%d pages=%d kept=%d reason=consecutive_zero_kept_pages",
                     empty_streak, pages, len(kept),
                 )
                 break
