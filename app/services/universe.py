@@ -13,6 +13,7 @@ from app.selector import normalize_markets
 logger = logging.getLogger(__name__)
 
 SUPPORTED_MARKET_TYPES = {"single", "combo"}
+SKIP_TICKER_PREFIXES = ("KXMVE",)
 
 
 def is_supported_market(market: dict[str, Any]) -> bool:
@@ -25,6 +26,11 @@ def is_supported_market(market: dict[str, Any]) -> bool:
     if market_type not in SUPPORTED_MARKET_TYPES:
         return False
     return True
+
+
+def is_skippable_ticker(ticker: str) -> bool:
+    ticker_clean = str(ticker or "").strip().upper()
+    return not ticker_clean or ticker_clean.startswith(SKIP_TICKER_PREFIXES)
 
 
 def persist_markets(raw_markets: list[dict]) -> int:

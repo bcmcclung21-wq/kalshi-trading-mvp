@@ -84,6 +84,7 @@ class TradingEngine:
     async def _guarded(self, fn) -> None:
         try:
             await fn()
+            self._failure_count = 0
             self.state.last_error = None
         except Exception as exc:
             self._failure_count += 1

@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from app.cache import TTLCache
 from app.config import settings
+from app.services.universe import is_skippable_ticker
 from app.strategy import TUNING
 from app.services.market_ingestion import AdaptiveRateLimiter
 
@@ -99,41 +100,63 @@ class KalshiClient:
         cached = self.cache.get("markets:open")
         if cached is not None:
             return list(cached)
-        out: list[dict[str, Any]] = []
+        target_kept = TUNING.max_markets_per_sync
+        page_limit = 200
+        max_pages = 80
+        max_kxmve_pages_in_a_row = 20
+
+        now_ts = int(time.time())
+        min_close_ts = now_ts + (TUNING.min_minutes_to_close * 60)
+        max_close_ts = now_ts + (TUNING.max_days_to_close * 86400)
+
+        kept: list[dict[str, Any]] = []
         cursor: str | None = None
-        seen_cursors: set[str] = set()
-        page = 0
-        t0 = time.perf_counter()
-        while True:
-            if cursor:
-                if cursor in seen_cursors:
-                    logger.error("duplicate_cursor_detected cursor=%s", cursor)
-                    raise RuntimeError("pagination_safety_break_triggered")
-                seen_cursors.add(cursor)
-            params: dict[str, Any] = {"status": "open", "limit": 1000}
+        pages = 0
+        empty_streak = 0
+
+        while pages < max_pages and len(kept) < target_kept:
+            params: dict[str, Any] = {
+                "status": "open",
+                "limit": page_limit,
+                "min_close_ts": min_close_ts,
+                "max_close_ts": max_close_ts,
+            }
             if cursor:
                 params["cursor"] = cursor
+
             payload = await self._request("GET", "/markets", params=params)
-            markets = list(payload.get("markets") or [])
-            out.extend(markets)
-            page += 1
-            if page > 100:
-                raise RuntimeError("pagination_safety_break_triggered")
-            next_cursor = payload.get("cursor")
-            if not next_cursor:
+            page_markets = list(payload.get("markets") or [])
+            pages += 1
+
+            page_kept = [m for m in page_markets if not is_skippable_ticker(str(m.get("ticker") or ""))]
+            kept.extend(page_kept)
+
+            if not page_kept:
+                empty_streak += 1
+            else:
+                empty_streak = 0
+
+            logger.info(
+                "kalshi_paginate page=%d fetched=%d kept_this_page=%d kept_total=%d empty_streak=%d",
+                pages, len(page_markets), len(page_kept), len(kept), empty_streak,
+            )
+
+            cursor = payload.get("cursor") or None
+            if not cursor:
                 break
-            cursor = str(next_cursor)
-        self.cache.set("markets:open", out, ttl_seconds=TUNING.market_cache_ttl_sec)
-        duration = time.perf_counter() - t0
+            if empty_streak >= max_kxmve_pages_in_a_row:
+                logger.warning(
+                    "kalshi_paginate_giving_up empty_streak=%d pages=%d kept=%d",
+                    empty_streak, pages, len(kept),
+                )
+                break
+
+        self.cache.set("markets:open", kept, ttl_seconds=TUNING.market_cache_ttl_sec)
         logger.info(
-            "pagination_cycle_summary pages=%d total_markets=%d duration_ms=%d throughput_rps=%.2f failures=0 duplicates_removed=%d",
-            page,
-            len(out),
-            int(duration * 1000),
-            (page / duration) if duration > 0 else 0.0,
-            max(0, page - len(seen_cursors)),
+            "kalshi_paginate_done pages=%d kept=%d target=%d",
+            pages, len(kept), target_kept,
         )
-        return out
+        return kept
 
     async def get_open_markets(self, limit: int | None = None) -> list[dict[str, Any]]:
         if limit is None or limit >= 1000:
