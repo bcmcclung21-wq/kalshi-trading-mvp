@@ -19,6 +19,8 @@ from app.selector import best_ask, best_bid, build_candidate, combo_pool, divers
 from app.services.audit import summarize_settlements
 from app.services.execution import execute_candidate
 from app.services.universe import persist_markets
+from app.services.market_ingestion import AsyncIngestionPipeline, EngineMode, IngestionMetrics, MarketCache, MarketDiscoveryEngine
+from app.services.resilience import BreakerRegistry
 from app.strategy import TUNING
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,12 @@ class TradingEngine:
         self._market_sync_lock = asyncio.Lock()
         self._engine_cycle_lock = asyncio.Lock()
         self.instance_id = f"{id(self)}"
+        self.mode = EngineMode.BOOT
+        self.metrics = IngestionMetrics()
+        self.market_cache = MarketCache(ttl_seconds=TUNING.market_cache_ttl_sec, max_size=20_000)
+        self.discovery = MarketDiscoveryEngine(ttl_seconds=3600, max_tracked=2_500)
+        self.pipeline = AsyncIngestionPipeline(self.market_cache, self.discovery, self.metrics)
+        self.breakers = BreakerRegistry()
 
     async def start(self) -> None:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
@@ -90,11 +98,23 @@ class TradingEngine:
             logger.warning("market_sync_skipped reason=lock_active")
             return
         async with self._market_sync_lock:
-            markets = await self.kalshi.get_open_markets()
+            if not await self.breakers.market_fetch_breaker.allow():
+                logger.warning("market_sync_skipped reason=breaker_open")
+                return
+            markets = await self.kalshi.get_open_markets() if self.mode == EngineMode.BOOT else list(self.market_cache.snapshot().values())
+            strategy_tickers: set[str] = set()
+            position_tickers = {str(p.get("ticker") or "") for p in await self.kalshi.get_positions()}
+            self.discovery.reconcile_registry(markets, strategy_tickers=strategy_tickers, position_tickers=position_tickers)
+            for ticker, state in self.discovery.tracked_markets.items():
+                await self.pipeline.enqueue(ticker, state.market, self.pipeline.next_version())
+            await self.pipeline.run_once()
             saved = persist_markets(markets)
+            await self.breakers.market_fetch_breaker.record_success()
+            if self.mode == EngineMode.BOOT:
+                self.mode = EngineMode.LIVE
             self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
             self.state.last_run_metrics["last_sync_saved"] = saved
-            logger.info("sync_markets fetched=%d saved=%d auth_ok=%s", len(markets), saved, self.kalshi.auth_status.ok)
+            logger.info("sync_markets mode=%s tracked=%d fetched=%d saved=%d auth_ok=%s queue_depth=%d", self.mode.value, len(self.discovery.tracked_markets), len(markets), saved, self.kalshi.auth_status.ok, self.metrics.queue_depth)
 
     async def _with_cycle_lock(self, fn_name: str, fn) -> None:
         if self._engine_cycle_lock.locked():
