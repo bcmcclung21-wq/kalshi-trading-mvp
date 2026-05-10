@@ -43,14 +43,23 @@ connect_args: dict[str, object] = {"connect_timeout": 5} if DATABASE_URL.startsw
 if DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
 
-# Postgres-level timeouts so no statement or lock can hang the process
-# below the Python layer. statement_timeout aborts any single SQL after
-# 30s; lock_timeout aborts any lock acquisition after 5s.
 if DATABASE_URL.startswith("postgresql"):
     connect_args["options"] = "-c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=60000"
 
 engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, pool_recycle=1800, pool_timeout=5, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True, class_=Session)
+
+
+# Columns that may be missing from market_snapshots in older Postgres
+# instances. Idempotent ALTERs run on every boot to keep the schema in
+# sync with the ORM. Each entry: (column_name, sql_type)
+_MARKET_SNAPSHOT_REPAIRS = [
+    ("spread", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("imbalance", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("volatility", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("microprice", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("liquidity_score", "DOUBLE PRECISION DEFAULT 0.0"),
+]
 
 
 @contextmanager
@@ -98,12 +107,53 @@ def verify_required_tables(required: list[str]) -> list[str]:
         return []
 
 
+def _repair_market_snapshots_schema(conn) -> list[str]:
+    """Idempotently add any columns missing from market_snapshots.
+    Returns list of columns that were added.
+    """
+    added: list[str] = []
+    if engine.dialect.name != "postgresql":
+        return added
+    try:
+        existing_cols = {row[0] for row in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'market_snapshots'"
+        ))}
+    except Exception as exc:
+        logger.warning("schema_repair_inspect_failed err=%s", exc)
+        return added
+
+    if not existing_cols:
+        return added
+
+    for col_name, col_type in _MARKET_SNAPSHOT_REPAIRS:
+        if col_name in existing_cols:
+            continue
+        try:
+            conn.execute(text(f"ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            added.append(col_name)
+            logger.info("schema_repair_added column=%s type=%s", col_name, col_type)
+        except (ProgrammingError, OperationalError) as exc:
+            logger.warning("schema_repair_failed column=%s err=%s", col_name, exc)
+    return added
+
+
 def init_db() -> BootstrapResult:
-    """Initialize DB. Honors SKIP_DB_BOOTSTRAP=1 to bypass entirely."""
+    """Initialize DB. Honors SKIP_DB_BOOTSTRAP=1 to bypass entirely.
+    Even when not skipped: no advisory lock, no alembic upgrade.
+    Just create_all + idempotent column repairs."""
     import app.models  # noqa: F401
 
     if os.getenv("SKIP_DB_BOOTSTRAP", "").strip() in ("1", "true", "True", "yes"):
         logger.warning("init_db_skipped reason=SKIP_DB_BOOTSTRAP_env_set")
+        # Still run the column-repair pass since this is the most common
+        # source of column-missing errors after a partial migration.
+        try:
+            _ensure_connection(engine)
+            with engine.begin() as conn:
+                _repair_market_snapshots_schema(conn)
+        except Exception as exc:
+            logger.warning("init_db_skipped_but_repair_failed err=%s", exc)
         return BootstrapResult(
             schema_version=_schema_version(),
             tables_missing=[],
@@ -115,9 +165,6 @@ def init_db() -> BootstrapResult:
     started = time.perf_counter()
     _ensure_connection(engine)
 
-    # NO advisory lock. NO alembic.upgrade(). Just create_all on missing
-    # tables, idempotent, with checkfirst. Statement timeouts above
-    # guarantee no individual SQL can hang the boot.
     with engine.begin() as conn:
         inspector = inspect(conn)
         expected = sorted(Base.metadata.tables.keys())
@@ -127,6 +174,10 @@ def init_db() -> BootstrapResult:
         if missing:
             Base.metadata.create_all(bind=conn, tables=[Base.metadata.tables[t] for t in missing], checkfirst=True)
             created = missing[:]
+
+        # Repair pass: add any columns the ORM expects but Postgres lacks.
+        _repair_market_snapshots_schema(conn)
+
         try:
             conn.execute(text("ALTER TABLE market_snapshots ALTER COLUMN title TYPE TEXT"))
             conn.execute(text("ALTER TABLE market_snapshots ALTER COLUMN subtitle TYPE TEXT"))
