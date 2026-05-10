@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from contextlib import asynccontextmanager
 import logging
+import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
@@ -22,23 +24,71 @@ logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="app/templates")
 
 
+BOOT_STATUS = {
+    "stage": "pre_lifespan",
+    "started_at": time.time(),
+    "init_db_ok": False,
+    "engine_started": False,
+    "last_error": None,
+}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    BOOT_STATUS["stage"] = "configure_logging_done"
     logger.info("startup_stage=init_db_begin")
-    bootstrap = init_db()
+
+    # Hard-timeout init_db so a stuck migration cannot block boot forever.
+    bootstrap = None
+    try:
+        bootstrap = await asyncio.wait_for(asyncio.to_thread(init_db), timeout=60.0)
+        BOOT_STATUS["init_db_ok"] = True
+        BOOT_STATUS["stage"] = "init_db_done"
+        logger.info("startup_stage=init_db_done")
+    except asyncio.TimeoutError:
+        BOOT_STATUS["stage"] = "init_db_timeout"
+        BOOT_STATUS["last_error"] = "init_db_timeout_60s"
+        logger.warning("startup_stage=init_db_timeout proceeding_in_degraded_mode")
+    except Exception as exc:
+        BOOT_STATUS["stage"] = "init_db_error"
+        BOOT_STATUS["last_error"] = f"init_db: {exc}"
+        logger.exception("startup_stage=init_db_error proceeding_in_degraded_mode")
+
     required = ["market_microstructure_state"]
-    missing = verify_required_tables(required)
+    try:
+        missing = verify_required_tables(required)
+    except Exception as exc:
+        missing = required
+        BOOT_STATUS["last_error"] = f"verify_tables: {exc}"
+        logger.exception("startup_stage=verify_tables_error")
     if missing:
         logger.warning("startup_degraded missing_tables=%s", missing)
+
+    BOOT_STATUS["stage"] = "engine_init"
     logger.info("startup_stage=engine_init")
     app.state.engine = TradingEngine()
     app.state.db_bootstrap = bootstrap
     app.state.degraded_mode = bool(missing)
+
+    BOOT_STATUS["stage"] = "engine_start"
     logger.info("startup_stage=engine_start")
-    await app.state.engine.start()
+    try:
+        await app.state.engine.start()
+        BOOT_STATUS["engine_started"] = True
+        BOOT_STATUS["stage"] = "running"
+        logger.info("startup_stage=running")
+    except Exception as exc:
+        BOOT_STATUS["stage"] = "engine_start_error"
+        BOOT_STATUS["last_error"] = f"engine_start: {exc}"
+        logger.exception("startup_stage=engine_start_error")
+
     yield
-    await app.state.engine.stop()
+
+    try:
+        await app.state.engine.stop()
+    except Exception:
+        logger.exception("shutdown_engine_stop_error")
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -50,13 +100,28 @@ async def health():
     return {"ok": True, "service": settings.app_name}
 
 
+@app.get("/debug/status")
+async def debug_status():
+    payload = dict(BOOT_STATUS)
+    payload["uptime_sec"] = round(time.time() - BOOT_STATUS["started_at"], 1)
+    try:
+        payload["engine_summary"] = app.state.engine.snapshot_summary()
+    except Exception as exc:
+        payload["engine_summary_error"] = str(exc)
+    return JSONResponse(payload)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    try:
+        summary = request.app.state.engine.snapshot_summary()
+    except Exception as exc:
+        return HTMLResponse(f"<pre>boot_status={BOOT_STATUS}\nerror={exc}</pre>", status_code=503)
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
-            "summary": request.app.state.engine.snapshot_summary(),
+            "summary": summary,
             "settings": settings,
             "categories": CATEGORIES,
             "bankroll_rules": BANKROLL_RULES,
