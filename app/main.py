@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -30,6 +31,7 @@ BOOT_STATUS = {
     "init_db_ok": False,
     "engine_started": False,
     "last_error": None,
+    "skip_db_bootstrap": os.getenv("SKIP_DB_BOOTSTRAP", "").strip() in ("1", "true", "True", "yes"),
 }
 
 
@@ -37,18 +39,17 @@ BOOT_STATUS = {
 async def lifespan(app: FastAPI):
     configure_logging()
     BOOT_STATUS["stage"] = "configure_logging_done"
-    logger.info("startup_stage=init_db_begin")
+    logger.info("startup_stage=init_db_begin skip_bootstrap=%s", BOOT_STATUS["skip_db_bootstrap"])
 
-    # Hard-timeout init_db so a stuck migration cannot block boot forever.
     bootstrap = None
     try:
-        bootstrap = await asyncio.wait_for(asyncio.to_thread(init_db), timeout=60.0)
+        bootstrap = await asyncio.wait_for(asyncio.to_thread(init_db), timeout=45.0)
         BOOT_STATUS["init_db_ok"] = True
         BOOT_STATUS["stage"] = "init_db_done"
         logger.info("startup_stage=init_db_done")
     except asyncio.TimeoutError:
         BOOT_STATUS["stage"] = "init_db_timeout"
-        BOOT_STATUS["last_error"] = "init_db_timeout_60s"
+        BOOT_STATUS["last_error"] = "init_db_timeout_45s"
         logger.warning("startup_stage=init_db_timeout proceeding_in_degraded_mode")
     except Exception as exc:
         BOOT_STATUS["stage"] = "init_db_error"
