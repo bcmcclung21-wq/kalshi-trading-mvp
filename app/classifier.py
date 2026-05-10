@@ -1,21 +1,16 @@
 """Kalshi market classifier.
 
 Pure-ASCII module. All downstream code (engine, selector, research,
-universe service, kalshi client, tests) imports from here. Do NOT
-redefine packaged-market detection or category mapping anywhere else.
+universe service, kalshi client, tests) imports from here.
 
 Public API:
-  - PACKAGED_PREFIXES         : tuple of ticker prefixes for packaged bundles
-  - CATEGORY_PREFIXES         : dict[category -> tuple of ticker prefixes]
-  - normalized_market(raw)    : coerce raw Kalshi payload to flat dict
-                                with market_type, category, legs,
-                                minutes_to_close already populated
-  - is_packaged_market(m)     : True for KXMVE / parlay / SGP bundles
-  - detect_category(m)        : map market -> sports/politics/crypto/
-                                economics/climate/unknown
-  - classify_category(m)      : alias of detect_category (back-compat)
-  - infer_market_type(m)      : 'combo' for packaged bundles, else 'single'
-  - is_singleton_binary(m)    : True for clean YES/NO singletons
+  - PACKAGED_PREFIXES, CATEGORY_PREFIXES
+  - normalized_market(raw)
+  - is_packaged_market(m)
+  - detect_category(m)
+  - classify_category(m)         (alias of detect_category)
+  - infer_market_type(m)
+  - is_singleton_binary(m)
 """
 
 from __future__ import annotations
@@ -24,24 +19,61 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
+# Bundled multi-outcome / derivative-prop markets. Filtered out of
+# the singleton trade universe.
 PACKAGED_PREFIXES: tuple[str, ...] = (
+    # Generic packaged
     "KXMVE",
-    "KXNBAGAME",
-    "KXNFLGAME",
-    "KXMLBGAME",
-    "KXNHLGAME",
     "KXBET",
     "KXSGP",
     "KXPARLAY",
     "KXCOMBO",
+    # Game-bundle packages
+    "KXNBAGAME",
+    "KXNFLGAME",
+    "KXMLBGAME",
+    "KXNHLGAME",
+    "KXNWSLGAME",
+    "KXHNLGAME",
+    "KXEPLGAME",
+    "KXSERIEAGAME",
+    "KXSAUDIPLGAME",
+    # Derivative-prop families (totals / spreads / both-teams-to-score
+    # / per-event mention bundles). These are multi-outcome, not
+    # binary singletons, so the singleton strategy must skip them.
+    "KXMLBMENTION",
+    "KXNFLMENTION",
+    "KXNBAMENTION",
+    "KXSAUDIPLTOTAL",
+    "KXSAUDIPLSPREAD",
+    "KXSAUDIPLBTTS",
+    "KXSERIEATOTAL",
+    "KXSERIEASPREAD",
+    "KXSERIEABTTS",
+    "KXEPLTOTAL",
+    "KXEPLSPREAD",
+    "KXEPLBTTS",
+    "KXBUNDESLIGATOTAL",
+    "KXBUNDESLIGASPREAD",
+    "KXLALIGATOTAL",
+    "KXLALIGASPREAD",
 )
 
 
 CATEGORY_PREFIXES: Dict[str, tuple] = {
     "sports": (
+        # US major
         "KXNBA", "KXNFL", "KXMLB", "KXNHL", "KXNCAAF", "KXNCAAB",
-        "KXEPL", "KXUCL", "KXMMA", "KXUFC", "KXBOX", "KXTEN",
-        "KXGOLF", "KXPGA", "KXF1", "KXNASCAR", "KXWNBA", "KXMLS",
+        "KXWNBA", "KXMLS", "KXNWSL",
+        # Soccer leagues
+        "KXEPL", "KXUCL", "KXSAUDIPL", "KXSERIEA", "KXLALIGA",
+        "KXBUNDESLIGA", "KXLIGUE1", "KXHNL",
+        # Combat
+        "KXMMA", "KXUFC", "KXBOX",
+        # Other
+        "KXTEN", "KXGOLF", "KXPGA", "KXF1", "KXNASCAR",
+        # Generic sports event prefixes
+        "KXSPORTS",
     ),
     "politics": (
         "KXPRES", "KXSEN", "KXHOUSE", "KXGOV", "KXELECT", "KXPOL",
@@ -71,8 +103,10 @@ _CATEGORY_TITLE_KEYWORDS: Dict[str, tuple[str, ...]] = {
     "sports": (
         "nba", "nfl", "mlb", "nhl", "ncaa", "epl", "premier league",
         "champions league", "mma", "ufc", "boxing", "tennis", "golf",
-        "pga", "f1", "formula 1", "nascar", "wnba", "mls", "score",
-        "win the game", "cover", "spread",
+        "pga", "f1", "formula 1", "nascar", "wnba", "mls", "nwsl",
+        "score", "win the game", "winner", "wins by", "cover",
+        "spread", "goals", "serie a", "saudi pl", "bundesliga",
+        "la liga", "ligue 1", "vs", "match", "fixture",
     ),
     "politics": (
         "election", "president", "senate", "house of representatives",
