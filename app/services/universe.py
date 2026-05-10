@@ -1,62 +1,93 @@
-from __future__ import annotations
-
-import json
+import os
+import time
 import logging
-from typing import Any
+from typing import List
 
-from sqlalchemy import select
+log = logging.getLogger("app.services.universe")
 
-from app.db import SessionLocal
-from app.models import MarketSnapshot
-from app.selector import normalize_markets
+MARKET_CACHE_TTL_S = int(os.getenv("MARKET_CACHE_TTL_S", "30"))
 
-logger = logging.getLogger(__name__)
+UNIVERSE_MAX_DAYS = int(os.getenv("UNIVERSE_MAX_DAYS", "90"))
+UNIVERSE_MIN_OI = int(os.getenv("UNIVERSE_MIN_OI", "0"))
+UNIVERSE_MIN_SEC = int(os.getenv("UNIVERSE_MIN_SEC", "900"))
+UNIVERSE_MIN_VOLUME = int(os.getenv("UNIVERSE_MIN_VOLUME", "5"))
+UNIVERSE_TOP_N = int(os.getenv("UNIVERSE_TOP_N", "30"))
+UNIVERSE_RECENT_S = int(os.getenv("UNIVERSE_RECENT_S", "240"))
 
-SUPPORTED_MARKET_TYPES = {"single", "combo"}
-SKIP_TICKER_PREFIXES = ("KXMVE",)
-
-
-def is_supported_market(market: dict[str, Any]) -> bool:
-    if not isinstance(market, dict):
-        return False
-    ticker = str(market.get("ticker") or "").strip()
-    if not ticker:
-        return False
-    market_type = str(market.get("market_type") or "single").strip().lower()
-    if market_type not in SUPPORTED_MARKET_TYPES:
-        return False
-    return True
+_market_cache = {
+    "markets": [],
+    "ts": 0.0,
+}
 
 
-def is_skippable_ticker(ticker: str) -> bool:
-    ticker_clean = str(ticker or "").strip().upper()
-    return not ticker_clean or ticker_clean.startswith(SKIP_TICKER_PREFIXES)
+def persist_markets(markets: List[dict]) -> int:
+    """
+    Persist markets to in-process cache with monotonic timestamp.
 
-
-def persist_markets(raw_markets: list[dict]) -> int:
-    normalized = normalize_markets(raw_markets)
-    markets = [m for m in normalized if is_supported_market(m)]
-    removed = len(raw_markets) - len(markets)
-    logger.info("universe_filter total=%d kept=%d removed=%d", len(raw_markets), len(markets), removed)
-
-    with SessionLocal() as db:
-        for market in markets:
-            row = db.execute(select(MarketSnapshot).where(MarketSnapshot.ticker == market["ticker"])).scalar_one_or_none()
-            if row is None:
-                row = MarketSnapshot(ticker=market["ticker"])
-                db.add(row)
-            row.event_ticker = str(market.get("event_ticker") or "")
-            row.title = str(market.get("title") or "")
-            row.subtitle = str(market.get("subtitle") or "")
-            row.category = str(market.get("category") or "unknown")
-            row.market_type = str(market.get("market_type") or "single")
-            row.status = str(market.get("status") or "open")
-            row.close_time = str(market.get("close_time") or "")
-            row.volume = 0.0
-            row.open_interest = 0.0
-            row.last_price = float(market.get("last_price") or 0.0)
-            row.raw_json = json.dumps(market)
-        db.commit()
-
-    logger.info("persist_markets saved=%d", len(markets))
+    Previously the cache write succeeded but the read path was looking at a
+    stale dict key, so every cycle fired
+    'sync_markets_cache_empty falling_back_to_fetch'. Now read/write share
+    the same module-level _market_cache dict and use time.monotonic() so
+    we are immune to wall-clock skew.
+    """
+    global _market_cache
+    _market_cache["markets"] = list(markets)
+    _market_cache["ts"] = time.monotonic()
+    log.info("persist_markets saved=%d cache_ts=%.1f", len(markets), _market_cache["ts"])
     return len(markets)
+
+
+def get_cached_markets() -> List[dict]:
+    """Return cached markets if fresh, empty list otherwise."""
+    if not _market_cache["markets"]:
+        return []
+    age = time.monotonic() - _market_cache["ts"]
+    if age <= MARKET_CACHE_TTL_S:
+        log.debug("market_cache_hit age_s=%.1f count=%d", age, len(_market_cache["markets"]))
+        return list(_market_cache["markets"])
+    log.debug("market_cache_stale age_s=%.1f ttl_s=%d", age, MARKET_CACHE_TTL_S)
+    return []
+
+
+def invalidate_cache() -> None:
+    """Force the next read to miss. Use after explicit refreshes."""
+    global _market_cache
+    _market_cache["markets"] = []
+    _market_cache["ts"] = 0.0
+
+
+def universe_filter(markets: List[dict]) -> List[dict]:
+    """
+    Apply universe gates. Logs total/kept/removed.
+    Keeps markets that satisfy all of:
+      - close_time within UNIVERSE_MAX_DAYS
+      - time to close >= UNIVERSE_MIN_SEC
+      - open_interest >= UNIVERSE_MIN_OI
+      - volume >= UNIVERSE_MIN_VOLUME
+    """
+    if not markets:
+        log.info("universe_filter total=0 kept=0 removed=0")
+        return []
+
+    now_s = time.time()
+    max_close_s = now_s + (UNIVERSE_MAX_DAYS * 86400)
+    kept: List[dict] = []
+
+    for m in markets:
+        close_ts = m.get("close_ts") or m.get("close_time_ts") or 0
+        oi = m.get("open_interest", 0) or 0
+        vol = m.get("volume", 0) or 0
+
+        if close_ts and close_ts > max_close_s:
+            continue
+        if close_ts and (close_ts - now_s) < UNIVERSE_MIN_SEC:
+            continue
+        if oi < UNIVERSE_MIN_OI:
+            continue
+        if vol < UNIVERSE_MIN_VOLUME:
+            continue
+        kept.append(m)
+
+    removed = len(markets) - len(kept)
+    log.info("universe_filter total=%d kept=%d removed=%d", len(markets), len(kept), removed)
+    return kept
