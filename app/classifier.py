@@ -1,91 +1,42 @@
-================================================================================
-KALSHI BOT — IMPORT ERROR FIX
-ALL-IN-ONE: file path, code, and deploy steps in one block
-================================================================================
+"""Kalshi market classifier.
 
-WHERE THIS GOES
----------------
-Repo:  bcmcclung21-wq/kalshi-alpha-railway
-File:  app/classifier.py   (REPLACE the existing file)
+Pure-ASCII module. All downstream code (engine, selector, research,
+universe service, kalshi client, tests) imports from here. Do NOT
+redefine packaged-market detection or category mapping anywhere else.
 
-Direct GitHub URL to the existing file:
-https://github.com/bcmcclung21-wq/kalshi-alpha-railway/blob/main/app/classifier.py
-
-Direct GitHub URL to the parent folder (where you upload):
-https://github.com/bcmcclung21-wq/kalshi-alpha-railway/tree/main/app
-
-
-WHY
----
-Crash loop. Log shows:
-  ImportError: cannot import name 'is_packaged_market' from 'app.classifier'
-
-selector.py imports a function that doesn't exist in classifier.py.
-Fix: add it. This file below is the complete replacement.
-
-
-HOW TO DEPLOY (iPhone, no Codex)
---------------------------------
-1. Save the code below as a file named  classifier.py
-   - Use Textastic, Working Copy, or Pretext (plain text, UTF-8).
-   - DO NOT use Apple Notes or Pages — they corrupt quotes.
-2. Open Safari to:
-   https://github.com/bcmcclung21-wq/kalshi-alpha-railway/tree/main/app
-3. Tap "Add file" → "Upload files".
-4. Pick your classifier.py from the Files app.
-   GitHub auto-overwrites the existing file (same name).
-5. Commit message:
-   fix(classifier): add is_packaged_market export to resolve ImportError
-6. "Commit directly to the main branch" → Commit changes.
-7. Railway auto-deploys. Watch logs for:
-   INFO: Application startup complete.
-
-
-================================================================================
-===== START OF FILE classifier.py — copy everything below until END =====
-================================================================================
-
-"""
-Market classifier for Kalshi bot v7.1.
-
-Single source of truth for:
-  - normalized_market(raw)        : shape a raw Kalshi market dict
-  - is_packaged_market(market)    : detect KXMVE / packaged multileg
-  - classify_category(market)     : map ticker prefix -> category bucket
-  - is_singleton_binary(market)   : true if a clean YES/NO singleton
-
-All downstream modules (selector, universe, kalshi client, engine)
-import packaged-market detection from here. Do not redefine elsewhere.
+Public API:
+  - PACKAGED_PREFIXES         : tuple of ticker prefixes for packaged bundles
+  - CATEGORY_PREFIXES         : dict[category -> tuple of ticker prefixes]
+  - normalized_market(raw)    : coerce raw Kalshi payload to flat dict
+                                with market_type, category, legs,
+                                minutes_to_close already populated
+  - is_packaged_market(m)     : True for KXMVE / parlay / SGP bundles
+  - detect_category(m)        : map market -> sports/politics/crypto/
+                                economics/climate/unknown
+  - classify_category(m)      : alias of detect_category (back-compat)
+  - infer_market_type(m)      : 'combo' for packaged bundles, else 'single'
+  - is_singleton_binary(m)    : True for clean YES/NO singletons
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
-# ---------------------------------------------------------------------------
-# Packaged / multileg ticker prefixes.
-# Bundled multi-outcome markets (parlays, packages) that saturate fetch
-# pagination and are not actionable under the singleton-binary strategy.
-# MUST be filtered out of the trade universe.
-# ---------------------------------------------------------------------------
-PACKAGED_PREFIXES = (
-    "KXMVE",        # packaged multi-leg (the saturating one)
-    "KXNBAGAME",    # packaged NBA game bundle
-    "KXNFLGAME",    # packaged NFL game bundle
-    "KXMLBGAME",    # packaged MLB game bundle
-    "KXNHLGAME",    # packaged NHL game bundle
-    "KXBET",        # packaged bet bundle
-    "KXSGP",        # same-game-parlay
-    "KXPARLAY",     # generic parlay
-    "KXCOMBO",      # combo
+PACKAGED_PREFIXES: tuple[str, ...] = (
+    "KXMVE",
+    "KXNBAGAME",
+    "KXNFLGAME",
+    "KXMLBGAME",
+    "KXNHLGAME",
+    "KXBET",
+    "KXSGP",
+    "KXPARLAY",
+    "KXCOMBO",
 )
 
 
-# ---------------------------------------------------------------------------
-# Category prefix mapping. Used by classify_category().
-# Keep aligned with UNIVERSE_TOP_N category targets in app/main.py.
-# ---------------------------------------------------------------------------
 CATEGORY_PREFIXES: Dict[str, tuple] = {
     "sports": (
         "KXNBA", "KXNFL", "KXMLB", "KXNHL", "KXNCAAF", "KXNCAAB",
@@ -111,14 +62,37 @@ CATEGORY_PREFIXES: Dict[str, tuple] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+_CATEGORY_TITLE_KEYWORDS: Dict[str, tuple[str, ...]] = {
+    "crypto": (
+        "bitcoin", "btc", "ethereum", "eth", "solana", "sol", "xrp",
+        "ripple", "crypto", "altcoin", "stablecoin", "ondo", "atom",
+        "chainlink", "link",
+    ),
+    "sports": (
+        "nba", "nfl", "mlb", "nhl", "ncaa", "epl", "premier league",
+        "champions league", "mma", "ufc", "boxing", "tennis", "golf",
+        "pga", "f1", "formula 1", "nascar", "wnba", "mls", "score",
+        "win the game", "cover", "spread",
+    ),
+    "politics": (
+        "election", "president", "senate", "house of representatives",
+        "governor", "vote", "congress", "scotus", "supreme court",
+        "approval rating", "primary", "midterm",
+    ),
+    "economics": (
+        "cpi", "ppi", "pce", "gdp", "unemployment", "jobs report",
+        "nonfarm payroll", "fomc", "fed", "interest rate", "rate cut",
+        "rate hike", "inflation",
+    ),
+    "climate": (
+        "temperature", "high temp", "low temp", "rainfall", "snowfall",
+        "hurricane", "tropical storm", "weather", "climate", "co2",
+        "rain", "snow", "wind",
+    ),
+}
+
+
 def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
-    """
-    Coerce a raw Kalshi market payload into a flat dict with the fields
-    downstream code expects. Returns None if the input is unusable.
-    """
     if not isinstance(raw, dict):
         return None
 
@@ -126,7 +100,7 @@ def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
     if not ticker or not isinstance(ticker, str):
         return None
 
-    return {
+    base: Dict[str, Any] = {
         "ticker": ticker,
         "event_ticker": raw.get("event_ticker") or "",
         "title": raw.get("title") or raw.get("yes_sub_title") or "",
@@ -142,21 +116,18 @@ def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
         "open_interest": raw.get("open_interest") or 0,
         "close_time": raw.get("close_time"),
         "expiration_time": raw.get("expiration_time"),
-        "category": raw.get("category") or "",
         "_raw": raw,
     }
 
+    base["category"] = _detect_category_for_payload(raw, base)
+    base["market_type"] = _infer_market_type_for_payload(raw, base)
+    base["legs"] = _infer_legs(raw, base["market_type"])
+    base["minutes_to_close"] = _minutes_to_close(raw)
+
+    return base
+
 
 def is_packaged_market(market: Any) -> bool:
-    """
-    True if the market is a packaged / multileg bundle that should be
-    excluded from the singleton trade universe.
-
-    Accepts either a raw Kalshi dict or a normalized_market() output.
-    Defensive against None / malformed input.
-    """
-    if market is None:
-        return False
     if not isinstance(market, dict):
         return False
 
@@ -165,13 +136,10 @@ def is_packaged_market(market: Any) -> bool:
         return False
     ticker_upper = ticker.upper()
 
-    # 1. Hard prefix match — primary defense, catches KXMVE saturation.
     for prefix in PACKAGED_PREFIXES:
         if ticker_upper.startswith(prefix):
             return True
 
-    # 2. Event ticker prefix match — some packaged markets only show
-    #    the bundle pattern at the event level.
     event_ticker = market.get("event_ticker") or ""
     if isinstance(event_ticker, str):
         event_upper = event_ticker.upper()
@@ -179,58 +147,122 @@ def is_packaged_market(market: Any) -> bool:
             if event_upper.startswith(prefix):
                 return True
 
-    # 3. Title heuristic — last-resort catch for re-skinned packages.
     title = (market.get("title") or "").lower()
     subtitle = (market.get("subtitle") or "").lower()
-    combined = f"{title} {subtitle}"
+    combined = title + " " + subtitle
     packaged_keywords = (
         "parlay",
         "same game",
         "multi-leg",
         "multileg",
         "combo bet",
-        "package",
+        "package bet",
     )
     for kw in packaged_keywords:
         if kw in combined:
             return True
 
+    mtype = str(market.get("market_type") or "").lower()
+    if mtype in ("combo", "multileg", "multi-leg", "packaged"):
+        return True
+
     return False
 
 
-def classify_category(market: Any) -> str:
-    """
-    Return one of: 'sports', 'politics', 'crypto', 'economics',
-    'climate', or 'unknown'. Based on ticker prefix; falls back to
-    Kalshi's own category field if prefix doesn't resolve.
-    """
-    if not isinstance(market, dict):
-        return "unknown"
-
-    ticker = (market.get("ticker") or market.get("market_ticker") or "").upper()
-    event_ticker = (market.get("event_ticker") or "").upper()
+def _detect_category_for_payload(raw: Dict[str, Any], normalized: Dict[str, Any]) -> str:
+    ticker = (raw.get("ticker") or raw.get("market_ticker") or "").upper()
+    event_ticker = (raw.get("event_ticker") or "").upper()
 
     for category, prefixes in CATEGORY_PREFIXES.items():
         for prefix in prefixes:
             if ticker.startswith(prefix) or event_ticker.startswith(prefix):
                 return category
 
-    raw_cat = (market.get("category") or "").lower().strip()
+    raw_cat = (raw.get("category") or "").lower().strip()
     if raw_cat in CATEGORY_PREFIXES:
         return raw_cat
-    if raw_cat in ("financial", "economy", "macro"):
+    if raw_cat in ("financial", "economy", "macro", "macroeconomics"):
         return "economics"
     if raw_cat in ("weather",):
         return "climate"
 
+    title_combined = (
+        (normalized.get("title") or "").lower()
+        + " "
+        + (normalized.get("subtitle") or "").lower()
+    )
+    if title_combined.strip():
+        for category, keywords in _CATEGORY_TITLE_KEYWORDS.items():
+            for kw in keywords:
+                if kw in title_combined:
+                    return category
+
     return "unknown"
 
 
+def detect_category(market: Any) -> str:
+    if not isinstance(market, dict):
+        return "unknown"
+    if "_raw" in market and isinstance(market.get("category"), str) and market["category"]:
+        return market["category"]
+    return _detect_category_for_payload(market, market)
+
+
+def classify_category(market: Any) -> str:
+    return detect_category(market)
+
+
+def _infer_market_type_for_payload(raw: Dict[str, Any], normalized: Dict[str, Any]) -> str:
+    if is_packaged_market(normalized):
+        return "combo"
+    explicit = str(raw.get("market_type") or "").strip().lower()
+    if explicit in ("combo", "multileg", "multi-leg", "packaged"):
+        return "combo"
+    if explicit in ("single", "binary", ""):
+        return "single"
+    return "single"
+
+
+def infer_market_type(market: Any) -> str:
+    if not isinstance(market, dict):
+        return "single"
+    if isinstance(market.get("market_type"), str) and "_raw" in market:
+        return market["market_type"]
+    return _infer_market_type_for_payload(market, market)
+
+
+def _infer_legs(raw: Dict[str, Any], market_type: str) -> int:
+    explicit = raw.get("legs") or raw.get("leg_count")
+    if isinstance(explicit, int) and explicit >= 1:
+        return explicit
+    if isinstance(explicit, float) and explicit >= 1:
+        return int(explicit)
+    if isinstance(explicit, str) and explicit.isdigit():
+        n = int(explicit)
+        if n >= 1:
+            return n
+    if market_type == "combo":
+        return 2
+    return 1
+
+
+def _minutes_to_close(raw: Dict[str, Any]) -> Optional[float]:
+    close_iso = raw.get("close_time") or raw.get("expiration_time")
+    if not close_iso or not isinstance(close_iso, str):
+        return None
+    try:
+        if close_iso.endswith("Z"):
+            close_iso = close_iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(close_iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = dt - datetime.now(timezone.utc)
+        return max(delta.total_seconds() / 60.0, 0.0)
+    except (ValueError, TypeError):
+        return None
+
+
 def is_singleton_binary(market: Any) -> bool:
-    """
-    True if the market is a clean YES/NO singleton suitable for
-    the v7.1 strategy. Excludes packaged bundles automatically.
-    """
     if not isinstance(market, dict):
         return False
     if is_packaged_market(market):
@@ -248,47 +280,13 @@ def is_singleton_binary(market: Any) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Backwards-compat exports.
-# ---------------------------------------------------------------------------
 __all__ = [
     "PACKAGED_PREFIXES",
     "CATEGORY_PREFIXES",
     "normalized_market",
     "is_packaged_market",
+    "detect_category",
     "classify_category",
+    "infer_market_type",
     "is_singleton_binary",
 ]
-
-================================================================================
-===== END OF FILE classifier.py =====
-================================================================================
-
-
-EXPECTED LOGS AFTER DEPLOY
---------------------------
-GOOD:
-  INFO: Started server process
-  INFO: Application startup complete.
-  INFO: Uvicorn running on http://0.0.0.0:PORT
-  [engine] cycle_start mode=paper live_execution=false
-  [funnel] fetch_markets_complete clean_markets=<N>
-
-BAD (paste back if seen):
-  ImportError: ...
-  ModuleNotFoundError: ...
-
-
-ROLLBACK
---------
-GitHub → Commits tab → find commit BEFORE this fix → "..." → Revert.
-Or Railway → Deployments → previous good deploy → Redeploy.
-This change only ADDS code. Low regression risk.
-
-
-NOTES
------
-- LIVE_EXECUTION stays false. Pre-live checklist not satisfied.
-- Do not touch app/legacy/*.
-- KXMVE pagination patch in app/main.py may still be pending —
-  confirm next session after this deploys cleanly.
