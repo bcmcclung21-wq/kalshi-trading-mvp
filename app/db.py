@@ -43,8 +43,18 @@ connect_args: dict[str, object] = {"connect_timeout": 5} if DATABASE_URL.startsw
 if DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
 
+# Statement timeout prevents any single SQL call from hanging the boot.
+# 30 seconds is generous for a healthy migration, fatal for a deadlock.
+if DATABASE_URL.startswith("postgresql"):
+    connect_args["options"] = "-c statement_timeout=30000 -c lock_timeout=10000 -c idle_in_transaction_session_timeout=60000"
+
 engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, pool_recycle=1800, pool_timeout=5, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True, class_=Session)
+
+
+LOCK_KEY = 842311
+LOCK_ACQUIRE_MAX_WAIT_SEC = 30
+LOCK_RETRY_INTERVAL_SEC = 2.0
 
 
 @contextmanager
@@ -71,6 +81,88 @@ def _ensure_connection(db_engine: Engine, retries: int = 8, sleep_s: float = 1.2
                 raise
             logger.warning("db_connection_retry attempt=%d max=%d", attempt, retries)
             time.sleep(sleep_s)
+
+
+def _diagnose_lock_holder() -> str:
+    """Return PID + age info for whoever currently holds the bootstrap lock.
+    Best-effort; returns 'unknown' on any failure.
+    """
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT pid, application_name, state,
+                       EXTRACT(EPOCH FROM (now() - state_change))::int AS state_age_sec,
+                       EXTRACT(EPOCH FROM (now() - backend_start))::int AS backend_age_sec
+                FROM pg_locks l
+                JOIN pg_stat_activity a USING (pid)
+                WHERE l.locktype = 'advisory'
+                  AND l.objid = :k
+                LIMIT 1
+            """), {"k": LOCK_KEY}).mappings().first()
+            if row:
+                return f"pid={row['pid']} app={row['application_name']} state={row['state']} state_age_sec={row['state_age_sec']} backend_age_sec={row['backend_age_sec']}"
+    except Exception as exc:
+        return f"diag_failed:{exc}"
+    return "unknown"
+
+
+def _force_release_stale_lock(max_age_sec: int = 300) -> bool:
+    """If the bootstrap advisory lock is held by a backend that has been
+    idle/stuck for more than max_age_sec, terminate that backend so the
+    lock releases. Returns True if a backend was terminated.
+    """
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT a.pid,
+                       EXTRACT(EPOCH FROM (now() - a.backend_start))::int AS backend_age_sec
+                FROM pg_locks l
+                JOIN pg_stat_activity a USING (pid)
+                WHERE l.locktype = 'advisory'
+                  AND l.objid = :k
+                  AND a.pid <> pg_backend_pid()
+                ORDER BY a.backend_start ASC
+                LIMIT 1
+            """), {"k": LOCK_KEY}).mappings().first()
+            if not row:
+                return False
+            if row["backend_age_sec"] is None or row["backend_age_sec"] < max_age_sec:
+                return False
+            pid = int(row["pid"])
+            logger.warning("force_releasing_stale_bootstrap_lock pid=%s age_sec=%s", pid, row["backend_age_sec"])
+            conn.execute(text("SELECT pg_terminate_backend(:p)"), {"p": pid})
+            return True
+    except Exception as exc:
+        logger.warning("force_release_lock_failed err=%s", exc)
+    return False
+
+
+def _acquire_bootstrap_lock(conn) -> bool:
+    """Try to grab the advisory lock with timeout + diagnostic retry.
+    Returns True on success, False if it could not be acquired after
+    LOCK_ACQUIRE_MAX_WAIT_SEC. Uses pg_try_advisory_lock so we never
+    block forever; if a stale lock is found, we kill its holder.
+    """
+    deadline = time.monotonic() + LOCK_ACQUIRE_MAX_WAIT_SEC
+    attempts = 0
+    while True:
+        attempts += 1
+        got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY}).scalar()
+        if got:
+            logger.info("bootstrap_lock_acquired attempts=%d", attempts)
+            return True
+        holder = _diagnose_lock_holder()
+        logger.warning("bootstrap_lock_busy attempt=%d holder=%s", attempts, holder)
+        if time.monotonic() >= deadline:
+            # Last-ditch: force-release if holder is older than 5 minutes.
+            if _force_release_stale_lock(max_age_sec=300):
+                got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY}).scalar()
+                if got:
+                    logger.info("bootstrap_lock_acquired_after_force_release")
+                    return True
+            logger.error("bootstrap_lock_unacquirable attempts=%d holder=%s", attempts, holder)
+            return False
+        time.sleep(LOCK_RETRY_INTERVAL_SEC)
 
 
 def _run_startup_migrations() -> bool:
@@ -107,13 +199,25 @@ def init_db() -> BootstrapResult:
     started = time.perf_counter()
     _ensure_connection(engine)
     migration_applied = False
-    lock_key = 842311
+
+    # Pre-flight: if the lock is already held by a long-dead backend, kill it
+    # before we even try. This handles the common "previous deploy crashed
+    # mid-migration" case without making the new boot wait the full timeout.
+    if engine.dialect.name == "postgresql":
+        _force_release_stale_lock(max_age_sec=120)
 
     with engine.begin() as conn:
+        lock_held = True
         if engine.dialect.name == "postgresql":
-            conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": lock_key})
+            lock_held = _acquire_bootstrap_lock(conn)
+            if not lock_held:
+                logger.warning("init_db_proceeding_without_lock degraded=true")
         try:
-            migration_applied = _run_startup_migrations()
+            try:
+                migration_applied = _run_startup_migrations()
+            except Exception as exc:
+                logger.warning("alembic_upgrade_failed falling_back_to_metadata err=%s", exc)
+                migration_applied = False
             inspector = inspect(conn)
             expected = sorted(Base.metadata.tables.keys())
             existing = set(inspector.get_table_names())
@@ -139,8 +243,11 @@ def init_db() -> BootstrapResult:
                 bootstrap_duration_ms=duration,
             )
         finally:
-            if engine.dialect.name == "postgresql":
-                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key})
+            if engine.dialect.name == "postgresql" and lock_held:
+                try:
+                    conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": LOCK_KEY})
+                except Exception as exc:
+                    logger.warning("bootstrap_lock_unlock_failed err=%s", exc)
 
     logger.info(
         "db_bootstrap_complete schema_version=%s tables_missing=%s tables_created=%s migration_applied=%s bootstrap_duration_ms=%d",
