@@ -295,6 +295,28 @@ class TradingEngine:
             logger.exception("orderbook_fetch_unhandled using_partial_data=false")
             batch_books = {}
         liquidity_rank: list[tuple[float, dict]] = []
+        with SessionLocal() as db:
+            for ticker, book in batch_books.items():
+                yes_bid_px = best_bid(list(book.get("yes_bids") or book.get("yes") or []))
+                yes_ask_px = best_ask(list(book.get("yes_asks") or []))
+                no_bid_px = best_bid(list(book.get("no_bids") or book.get("no") or []))
+                no_ask_px = best_ask(list(book.get("no_asks") or []))
+                if yes_ask_px <= 0 and no_bid_px > 0:
+                    yes_ask_px = 1 - no_bid_px
+                if no_ask_px <= 0 and yes_bid_px > 0:
+                    no_ask_px = 1 - yes_bid_px
+                db.add(
+                    OrderBookSnapshot(
+                        ticker=str(ticker),
+                        yes_bid=yes_bid_px,
+                        yes_ask=yes_ask_px,
+                        no_bid=no_bid_px,
+                        no_ask=no_ask_px,
+                        spread_cents=max(0.0, yes_ask_px - yes_bid_px) * 100.0,
+                        raw_json=json.dumps(book),
+                    )
+                )
+            db.commit()
         markets_with_books = [m for m in pool if batch_books.get(str(m.get("ticker") or ""))]
         markets_without_books = [m for m in pool if not batch_books.get(str(m.get("ticker") or ""))]
         for m in markets_with_books:
@@ -304,7 +326,23 @@ class TradingEngine:
                 continue
             snap = self.liquidity.evaluate(t, batch_books.get(t, {}))
             if not snap:
-                logger.info("liquidity_skip ticker=%s reason=no_snapshot_or_quotes", t)
+                book = batch_books.get(t, {})
+                yes_bids_count = len(list(book.get("yes_bids") or book.get("yes") or []))
+                yes_asks_count = len(list(book.get("yes_asks") or []))
+                no_bids_count = len(list(book.get("no_bids") or book.get("no") or []))
+                no_asks_count = len(list(book.get("no_asks") or []))
+                yes_bid = best_bid(list(book.get("yes_bids") or book.get("yes") or []))
+                yes_ask = best_ask(list(book.get("yes_asks") or []))
+                no_bid = best_bid(list(book.get("no_bids") or book.get("no") or []))
+                no_ask = best_ask(list(book.get("no_asks") or []))
+                if yes_ask <= 0 and no_bid > 0:
+                    yes_ask = 1 - no_bid
+                if no_ask <= 0 and yes_bid > 0:
+                    no_ask = 1 - yes_bid
+                logger.info(
+                    "liquidity_skip ticker=%s reason=no_snapshot_or_quotes yes_bids=%d yes_asks=%d no_bids=%d no_asks=%d yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f",
+                    t, yes_bids_count, yes_asks_count, no_bids_count, no_asks_count, yes_bid, yes_ask, no_bid, no_ask,
+                )
                 continue
             has_pair = ((snap.yes_bid > 0 and snap.yes_ask > 0) or (snap.no_bid > 0 and snap.no_ask > 0))
             if not has_pair:
