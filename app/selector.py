@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import random
 from collections import defaultdict
 from typing import Any
@@ -10,28 +11,14 @@ from app.research import build_research_envelope
 from app.strategy import SPORTS, TUNING
 
 
-def _side_levels(orderbook: dict[str, Any], side: str) -> list[Any]:
-    direct = list(orderbook.get(side) or [])
-    if direct:
-        return direct
-    # Backward compatibility with pre-normalized synthetic books.
-    if side == "yes_bids":
-        return list(orderbook.get("yes") or [])
-    if side == "no_bids":
-        return list(orderbook.get("no") or [])
-    return []
-
-
 def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
-    """Strict validation for Kalshi orderbooks."""
-
     if not orderbook:
         return False
 
-    yes_bids = _side_levels(orderbook, "yes_bids")
-    yes_asks = _side_levels(orderbook, "yes_asks")
-    no_bids = _side_levels(orderbook, "no_bids")
-    no_asks = _side_levels(orderbook, "no_asks")
+    yes_bids = orderbook.get("yes_bids") or orderbook.get("yes") or []
+    yes_asks = orderbook.get("yes_asks") or []
+    no_bids = orderbook.get("no_bids") or orderbook.get("no") or []
+    no_asks = orderbook.get("no_asks") or []
 
     if not yes_bids and not yes_asks:
         return False
@@ -42,19 +29,12 @@ def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
 
 
 def has_market_liquidity(market: dict[str, Any]) -> bool:
-    """Deprecated: metadata liquidity fields are intentionally ignored."""
     return True
 
 
 def validate_market_candidate(market: dict[str, Any], orderbook: dict[str, Any]) -> tuple[bool, str]:
-    """Centralized validation gate."""
-
     if not has_valid_orderbook(orderbook):
         return False, "invalid_orderbook"
-
-    quote = _best_quote_side(orderbook)
-    if quote is None:
-        return False, "invalid_bid_ask_pair"
 
     return True, "valid"
 
@@ -79,7 +59,26 @@ class Candidate:
 
 
 def normalize_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [normalized_market(m) for m in markets if str(m.get("ticker") or "")]
+    normalized: list[dict[str, Any]] = []
+    for market in markets:
+        nm = normalized_market(market)
+        if nm and str(nm.get("ticker") or ""):
+            normalized.append(nm)
+    return normalized
+
+
+def _parse_close_dt(market: dict[str, Any]) -> datetime | None:
+    close_value = market.get("close_time") or market.get("expiration_time")
+    if not close_value:
+        return None
+    try:
+        text = str(close_value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -89,9 +88,14 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "wrong_category": 0,
         "no_liquidity_sign": 0,
         "too_close_to_close": 0,
+        "too_far_to_close": 0,
+        "not_same_day_settlement": 0,
+        "missing_close_time": 0,
         "packaged_market": 0,
     }
     valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
+    today_utc = datetime.now(timezone.utc).date()
+
     for market in markets:
         if market.get("market_type") != "single":
             rejects["wrong_market_type"] += 1
@@ -102,10 +106,29 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if is_packaged_market(market):
             rejects["packaged_market"] += 1
             continue
+
         minutes = market.get("minutes_to_close")
-        if minutes is not None and minutes < TUNING.min_minutes_to_close:
+        if minutes is None:
+            rejects["missing_close_time"] += 1
+            continue
+
+        if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
             continue
+
+        if minutes > (TUNING.max_days_to_close * 1440):
+            rejects["too_far_to_close"] += 1
+            continue
+
+        if TUNING.same_day_only:
+            close_dt = _parse_close_dt(market)
+            if close_dt is None:
+                rejects["missing_close_time"] += 1
+                continue
+            if close_dt.date() != today_utc:
+                rejects["not_same_day_settlement"] += 1
+                continue
+
         out.append(market)
     return out, rejects
 
@@ -165,20 +188,25 @@ def best_ask(levels: list[Any]) -> float:
 
 
 def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | None:
-    yes_bid = best_bid(_side_levels(orderbook, "yes_bids"))
-    yes_ask = best_ask(_side_levels(orderbook, "yes_asks"))
-    no_bid = best_bid(_side_levels(orderbook, "no_bids"))
-    no_ask = best_ask(_side_levels(orderbook, "no_asks"))
-    if yes_ask <= 0 and no_bid > 0:
-        yes_ask = 1.0 - no_bid
-    if no_ask <= 0 and yes_bid > 0:
-        no_ask = 1.0 - yes_bid
+    yes_bids = list(orderbook.get("yes_bids") or orderbook.get("yes") or [])
+    yes_asks = list(orderbook.get("yes_asks") or [])
+    no_bids = list(orderbook.get("no_bids") or orderbook.get("no") or [])
+    no_asks = list(orderbook.get("no_asks") or [])
+
+    yes_bid = best_bid(yes_bids)
+    yes_ask = best_ask(yes_asks)
+    no_bid = best_bid(no_bids)
+    no_ask = best_ask(no_asks)
+
     if yes_ask <= 0 and no_ask <= 0:
         return None
+
     yes_spread = max(0.0, (yes_ask - yes_bid) * 100) if yes_ask and yes_bid else 999.0
     no_spread = max(0.0, (no_ask - no_bid) * 100) if no_ask and no_bid else 999.0
+
     yes_quality = abs(yes_ask - 0.5) + (yes_spread / 100.0)
     no_quality = abs(no_ask - 0.5) + (no_spread / 100.0)
+
     if yes_ask > 0 and yes_quality <= no_quality:
         return ("YES", yes_ask, yes_spread)
     if no_ask > 0:
@@ -188,6 +216,8 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
 
 def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_note: dict[str, Any] | None = None) -> tuple[Candidate | None, str | None]:
     market = normalized_market(market)
+    if not market:
+        return None, "invalid_market"
     if market["market_type"] == "combo" and (not TUNING.allow_combos or market["category"] != SPORTS):
         return None, "unsupported_combo"
     if market["market_type"] == "single" and is_packaged_market(market):
