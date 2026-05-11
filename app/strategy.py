@@ -47,7 +47,8 @@ class RuntimeTuning:
     min_open_interest: float = 2.0
     max_spread_cents: float = 20.0
     min_minutes_to_close: int = 20
-    max_days_to_close: int = 14
+    max_days_to_close: int = 1
+    same_day_only: bool = True
 
     min_projection_score: float = 50.0
     min_confidence_score: float = 50.0
@@ -80,7 +81,8 @@ TUNING = RuntimeTuning(
     min_open_interest=_env_float("MIN_OPEN_INTEREST", 2.0),
     max_spread_cents=_env_float("MAX_SPREAD_CENTS", 20.0),
     min_minutes_to_close=_env_int("MIN_MINUTES_TO_CLOSE", 20),
-    max_days_to_close=_env_int("MAX_DAYS_TO_CLOSE", 14),
+    max_days_to_close=_env_int("MAX_DAYS_TO_CLOSE", 1),
+    same_day_only=_env_bool("SAME_DAY_ONLY", True),
     min_projection_score=_env_float("MIN_PROJECTION_SCORE", 50.0),
     min_confidence_score=_env_float("MIN_CONFIDENCE_SCORE", 50.0),
     min_total_score_single=_env_float("MIN_TOTAL_SCORE_SINGLE", 58.0),
