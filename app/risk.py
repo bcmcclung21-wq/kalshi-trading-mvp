@@ -1,6 +1,11 @@
+from __future__ import annotations
+
+import math
 import os
 import logging
 from typing import Optional
+
+from app.strategy import TUNING, bankroll_pct
 
 log = logging.getLogger("app.risk")
 
@@ -28,6 +33,42 @@ def _clip01(x: float) -> float:
     return x
 
 
+def trade_notional(bankroll_usd: float, legs: int) -> float:
+    return round(float(bankroll_usd) * bankroll_pct(legs), 2)
+
+
+def contract_count(bankroll_usd: float, legs: int, entry_price: float) -> int:
+    entry_price = float(entry_price or 0.0)
+    if entry_price <= 0.0:
+        return 0
+    notional = trade_notional(bankroll_usd, legs)
+    return max(0, math.floor(notional / entry_price))
+
+
+def duplicate_ticker_ok(ticker: str, positions: list[dict]) -> bool:
+    target = str(ticker or "").strip().lower()
+    if not target:
+        return False
+    for row in positions:
+        if str(row.get("status") or "open").lower() != "open":
+            continue
+        if str(row.get("ticker") or "").strip().lower() == target:
+            return False
+    return True
+
+
+def category_exposure_ok(category: str, positions: list[dict]) -> bool:
+    open_rows = [row for row in positions if str(row.get("status") or "open").lower() == "open"]
+    if not open_rows:
+        return True
+    current = sum(1 for row in open_rows if str(row.get("category") or "").lower() == str(category or "").lower())
+    projected_total = len(open_rows) + 1
+    if projected_total <= 0:
+        return True
+    projected_share = (current + 1) / projected_total
+    return projected_share <= max(1.0, TUNING.max_category_exposure_pct * 10) if TUNING.max_category_exposure_pct >= 1.0 else projected_share <= TUNING.max_category_exposure_pct
+
+
 def score_candidate(
     market: dict,
     orderbook: Optional[dict],
@@ -36,18 +77,6 @@ def score_candidate(
     depth_usd: float,
     freshness_s: float,
 ) -> dict:
-    """
-    Score a single candidate market.
-
-    Returns dict with:
-      total                : weighted composite [0,1]
-      edge,liq,depth,fresh : per-leg normalized scores
-      pass                 : bool, True iff total >= MIN_TOTAL_SCORE
-      reason               : None if pass else 'low_total_score'
-
-    When LOG_SCORE_BREAKDOWN is true, logs the full breakdown including
-    raw inputs and the active threshold for diagnosis.
-    """
     edge_score = _clip01(edge / EDGE_NORM) if EDGE_NORM > 0 else 0.0
     liq_score = _clip01(liquidity / LIQ_NORM) if LIQ_NORM > 0 else 0.0
     depth_score = _clip01(depth_usd / DEPTH_NORM) if DEPTH_NORM > 0 else 0.0
@@ -75,8 +104,7 @@ def score_candidate(
 
     if LOG_SCORE_BREAKDOWN:
         log.info(
-            "score_breakdown ticker=%s total=%.3f edge=%.3f liq=%.3f depth=%.3f fresh=%.3f "
-            "raw_edge=%.4f raw_liq=%.1f raw_depth=%.1f raw_fresh_s=%.0f threshold=%.3f pass=%s",
+            "score_breakdown ticker=%s total=%.3f edge=%.3f liq=%.3f depth=%.3f fresh=%.3f raw_edge=%.4f raw_liq=%.1f raw_depth=%.1f raw_fresh_s=%.0f threshold=%.3f pass=%s",
             market.get("ticker", "?"),
             total, edge_score, liq_score, depth_score, fresh_score,
             edge, liquidity, depth_usd, freshness_s,
@@ -87,11 +115,6 @@ def score_candidate(
 
 
 def r5_depth_gate(orderbook: Optional[dict], side: str = "yes") -> dict:
-    """
-    R5 depth gate: require at least R5_MIN_DEPTH_USD of resting liquidity
-    on the relevant side.
-    Returns {'pass': bool, 'depth_usd': float, 'reason': str|None}.
-    """
     if not orderbook:
         return {"pass": False, "depth_usd": 0.0, "reason": "no_orderbook"}
 
@@ -99,10 +122,10 @@ def r5_depth_gate(orderbook: Optional[dict], side: str = "yes") -> dict:
     depth_usd = 0.0
     for lvl in levels:
         try:
-            price_cents = float(lvl[0])
-            size = float(lvl[1])
-            depth_usd += (price_cents / 100.0) * size
-        except (IndexError, TypeError, ValueError):
+            price = float(lvl.get("price") if isinstance(lvl, dict) else lvl[0])
+            size = float(lvl.get("qty") if isinstance(lvl, dict) else lvl[1] if len(lvl) > 1 else 1.0)
+            depth_usd += price * size
+        except (IndexError, TypeError, ValueError, AttributeError):
             continue
 
     if depth_usd < R5_MIN_DEPTH_USD:
