@@ -61,6 +61,19 @@ _MARKET_SNAPSHOT_REPAIRS = [
     ("liquidity_score", "DOUBLE PRECISION DEFAULT 0.0"),
 ]
 
+_ORDER_RECORDS_REPAIRS = [
+    ("realized_pnl", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("settled_at", "TIMESTAMP WITH TIME ZONE"),
+    ("features_json", "TEXT DEFAULT '{}'"),
+    ("estimated_win_probability", "DOUBLE PRECISION DEFAULT 0.0"),
+]
+
+_AUDIT_RUNS_REPAIRS = [
+    ("feature_breakdown_json", "TEXT DEFAULT '{}'"),
+    ("calibration_json", "TEXT DEFAULT '{}'"),
+    ("learning_summary_json", "TEXT DEFAULT '{}'"),
+]
+
 
 @contextmanager
 def session_scope() -> Session:
@@ -111,30 +124,35 @@ def _repair_market_snapshots_schema(conn) -> list[str]:
     """Idempotently add any columns missing from market_snapshots.
     Returns list of columns that were added.
     """
+    return _repair_table_schema(conn, "market_snapshots", _MARKET_SNAPSHOT_REPAIRS)
+
+
+def _repair_table_schema(conn, table_name: str, repairs: list[tuple[str, str]]) -> list[str]:
+    """Idempotently add any columns missing from the named table."""
     added: list[str] = []
     if engine.dialect.name != "postgresql":
         return added
     try:
         existing_cols = {row[0] for row in conn.execute(text(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'market_snapshots'"
-        ))}
+            "WHERE table_name = :table_name"
+        ), {"table_name": table_name})}
     except Exception as exc:
-        logger.warning("schema_repair_inspect_failed err=%s", exc)
+        logger.warning("schema_repair_inspect_failed table=%s err=%s", table_name, exc)
         return added
 
     if not existing_cols:
         return added
 
-    for col_name, col_type in _MARKET_SNAPSHOT_REPAIRS:
+    for col_name, col_type in repairs:
         if col_name in existing_cols:
             continue
         try:
-            conn.execute(text(f"ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
             added.append(col_name)
-            logger.info("schema_repair_added column=%s type=%s", col_name, col_type)
+            logger.info("schema_repair_added table=%s column=%s type=%s", table_name, col_name, col_type)
         except (ProgrammingError, OperationalError) as exc:
-            logger.warning("schema_repair_failed column=%s err=%s", col_name, exc)
+            logger.warning("schema_repair_failed table=%s column=%s err=%s", table_name, col_name, exc)
     return added
 
 
@@ -152,6 +170,8 @@ def init_db() -> BootstrapResult:
             _ensure_connection(engine)
             with engine.begin() as conn:
                 _repair_market_snapshots_schema(conn)
+                _repair_table_schema(conn, "order_records", _ORDER_RECORDS_REPAIRS)
+                _repair_table_schema(conn, "audit_runs", _AUDIT_RUNS_REPAIRS)
         except Exception as exc:
             logger.warning("init_db_skipped_but_repair_failed err=%s", exc)
         return BootstrapResult(
@@ -177,6 +197,8 @@ def init_db() -> BootstrapResult:
 
         # Repair pass: add any columns the ORM expects but Postgres lacks.
         _repair_market_snapshots_schema(conn)
+        _repair_table_schema(conn, "order_records", _ORDER_RECORDS_REPAIRS)
+        _repair_table_schema(conn, "audit_runs", _AUDIT_RUNS_REPAIRS)
 
         try:
             conn.execute(text("ALTER TABLE market_snapshots ALTER COLUMN title TYPE TEXT"))
