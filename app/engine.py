@@ -230,26 +230,17 @@ class TradingEngine:
         logger.info("market_categories_seen %s", dict(cat_counter.most_common(10)))
         logger.info("market_types_seen %s", dict(type_counter.most_common(5)))
 
-        pool, single_rejects = single_pool(markets)
         logger.info(
-            "single_pool_result kept=%d wrong_type=%d wrong_cat=%d no_liq=%d too_close=%d",
-            len(pool),
-            single_rejects["wrong_market_type"],
-            single_rejects["wrong_category"],
-            single_rejects["no_liquidity_sign"],
-            single_rejects["too_close_to_close"],
-        )
-
-        if single_rejects["wrong_category"] > 0:
-            unknowns = [m for m in markets if m.get("category") not in {"sports", "politics", "crypto", "climate", "economics"}]
-            sample = unknowns[:5]
-            for m in sample:
-                logger.info(
-                    "unknown_category_sample ticker=%s event=%s title=%s subtitle=%s",
-                    str(m.get("ticker") or "")[:60],
-                    str(m.get("event_ticker") or "")[:40],
-                    str(m.get("title") or "")[:80],
-                    str(m.get("subtitle") or "")[:80],
+    "single_pool_result kept=%d wrong_type=%d wrong_cat=%d no_liq=%d too_close=%d too_far=%d not_same_day=%d missing_close=%d",
+    len(pool),
+    single_rejects["wrong_market_type"],
+    single_rejects["wrong_category"],
+    single_rejects["no_liquidity_sign"],
+    single_rejects["too_close_to_close"],
+    single_rejects["too_far_to_close"],
+    single_rejects["not_same_day_settlement"],
+    single_rejects["missing_close_time"],
+)
                 )
 
         if TUNING.allow_combos:
