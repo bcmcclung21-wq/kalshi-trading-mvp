@@ -11,7 +11,7 @@ from sqlalchemy import desc, select
 
 from app.classifier import detect_category, normalized_market
 from app.db import SessionLocal
-from app.kalshi import KalshiClient
+from app.polymarket import PolymarketClient
 from app.state import EngineState
 from app.models import AuditRun, CandidateRun, OrderBookSnapshot, PositionSnapshot, ResearchNote
 from app.risk import category_exposure_ok, duplicate_ticker_ok
@@ -32,7 +32,7 @@ RECONCILE_TIMEOUT_S = int(os.getenv("RECONCILE_TIMEOUT_S", "30"))
 
 class TradingEngine:
     def __init__(self) -> None:
-        self.kalshi = KalshiClient()
+        self.poly = PolymarketClient()
         self.state = EngineState()
         self._tasks: list[asyncio.Task] = []
         self._last_audit_date: str | None = None
@@ -67,7 +67,7 @@ class TradingEngine:
     async def stop(self) -> None:
         for task in self._tasks:
             task.cancel()
-        await self.kalshi.close()
+        await self.poly.close()
 
     async def market_sync_loop(self) -> None:
         while True:
@@ -114,7 +114,7 @@ class TradingEngine:
                 logger.warning("market_sync_skipped reason=breaker_open")
                 return
             if self.mode == EngineMode.BOOT:
-                markets = await self.kalshi.get_open_markets()
+                markets = await self.poly.get_open_markets()
                 markets_source = "boot_fetch"
             else:
                 cached = list(self.market_cache.snapshot().values())
@@ -123,12 +123,12 @@ class TradingEngine:
                     markets_source = "cache"
                 else:
                     logger.warning("sync_markets_cache_empty falling_back_to_fetch")
-                    markets = await self.kalshi.get_open_markets()
+                    markets = await self.poly.get_open_markets()
                     markets_source = "fallback_fetch"
             logger.info("sync_markets_source=%s count=%d", markets_source, len(markets))
-            api_round_trip_ok = self.mode != EngineMode.BOOT or self.kalshi.last_paginate_pages > 0
+            api_round_trip_ok = self.mode != EngineMode.BOOT or self.poly.last_paginate_pages > 0
             strategy_tickers: set[str] = set()
-            position_tickers = {str(p.get("ticker") or "") for p in await self.kalshi.get_positions()}
+            position_tickers = {str(p.get("ticker") or "") for p in await self.poly.get_positions()}
             self.discovery.reconcile_registry(markets, strategy_tickers=strategy_tickers, position_tickers=position_tickers)
             for ticker, state in self.discovery.tracked_markets.items():
                 await self.pipeline.enqueue(ticker, state.market, self.pipeline.next_version())
@@ -142,7 +142,7 @@ class TradingEngine:
                 self.mode = EngineMode.LIVE
             self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
             self.state.last_run_metrics["last_sync_saved"] = saved
-            logger.info("sync_markets mode=%s tracked=%d fetched=%d saved=%d auth_ok=%s queue_depth=%d", self.mode.value, len(self.discovery.tracked_markets), len(markets), saved, self.kalshi.auth_status.ok, self.metrics.queue_depth)
+            logger.info("sync_markets mode=%s tracked=%d fetched=%d saved=%d auth_ok=%s queue_depth=%d", self.mode.value, len(self.discovery.tracked_markets), len(markets), saved, self.poly.auth_status.ok, self.metrics.queue_depth)
 
     async def _with_cycle_lock(self, fn_name: str, fn) -> None:
         if self._engine_cycle_lock.locked():
@@ -193,12 +193,12 @@ class TradingEngine:
             self._trading_disabled_until = 0.0
             self._failure_count = 0
         t0 = time.perf_counter()
-        raw_markets = list(self.market_cache.snapshot().values()) or await self.kalshi.get_all_open_markets()
+        raw_markets = list(self.market_cache.snapshot().values()) or await self.poly.get_all_open_markets()
         markets = normalize_markets(raw_markets)
-        logger.info("run_cycle raw=%d normalized=%d auth_ok=%s", len(raw_markets), len(markets), self.kalshi.auth_status.ok)
+        logger.info("run_cycle raw=%d normalized=%d auth_ok=%s", len(raw_markets), len(markets), self.poly.auth_status.ok)
         note_map = await self._manual_notes()
-        positions = await self.kalshi.get_positions()
-        self.state.auth_ok = self.kalshi.auth_status.ok
+        positions = await self.poly.get_positions()
+        self.state.auth_ok = self.poly.auth_status.ok
         position_rows = [
             {"ticker": str(p.get("ticker") or ""), "category": detect_category(p), "status": str(p.get("status") or "open")}
             for p in positions
@@ -238,7 +238,7 @@ class TradingEngine:
 
         candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(100, TUNING.max_orderbooks_per_cycle * 5)] if m.get("ticker")]
         try:
-            batch_books = await self.kalshi.get_orderbooks(candidate_tickers, depth=25)
+            batch_books = await self.poly.get_orderbooks(candidate_tickers, depth=25)
         except Exception:
             logger.exception("orderbook_fetch_unhandled using_partial_data=false")
             batch_books = {}
@@ -300,9 +300,9 @@ class TradingEngine:
                 candidates.append(candidate)
 
             ranked = rank_candidates(candidates)[: TUNING.max_orders_per_cycle]
-            if not self.kalshi.auth_status.ok:
+            if not self.poly.auth_status.ok:
                 ranked = []
-            bankroll_usd = float((await self.kalshi.get_balance()).get("balance") or 1000.0) if self.kalshi.auth_status.ok else 1000.0
+            bankroll_usd = float((await self.poly.get_balance()).get("balance") or 1000.0) if self.poly.auth_status.ok else 1000.0
             for candidate in ranked:
                 db.add(
                     CandidateRun(
@@ -322,7 +322,7 @@ class TradingEngine:
                         rationale=candidate.rationale,
                     )
                 )
-                await execute_candidate(self.kalshi, db, candidate, bankroll_usd=bankroll_usd)
+                await execute_candidate(self.poly, db, candidate, bankroll_usd=bankroll_usd)
             db.commit()
 
         if self.liquidity:
@@ -352,8 +352,8 @@ class TradingEngine:
     async def _reconcile_inner(self) -> None:
         logger.info("reconcile_start")
         t0 = time.monotonic()
-        positions = await self.kalshi.get_positions()
-        self.state.auth_ok = self.kalshi.auth_status.ok
+        positions = await self.poly.get_positions()
+        self.state.auth_ok = self.poly.auth_status.ok
         with SessionLocal() as db:
             for row in positions:
                 db.add(
@@ -375,7 +375,7 @@ class TradingEngine:
         await self._with_cycle_lock("audit", self._run_daily_audit_inner)
 
     async def _run_daily_audit_inner(self) -> None:
-        settlements = await self.kalshi.get_settlements()
+        settlements = await self.poly.get_settlements()
         prepared = []
         for row in settlements:
             prepared.append(
