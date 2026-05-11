@@ -129,7 +129,7 @@ class PolymarketClient:
                     return nested
             return payload
 
-        def _extract_levels(container: dict[str, Any], *keys: str) -> list[Any]:
+        def _extract_levels(container: dict[str, Any], keys: tuple[str, ...]) -> list[Any]:
             for key in keys:
                 values = container.get(key)
                 if isinstance(values, list):
@@ -141,71 +141,37 @@ class PolymarketClient:
                 return None
             px = _safe_float(level.get("px"), _safe_float(level.get("price"), _safe_float(level.get("value"))))
             qty = _safe_float(level.get("qty"), _safe_float(level.get("quantity"), _safe_float(level.get("size"), _safe_float(level.get("count"), 1.0))))
-            if px <= 0:
+            if not (0.0 < px < 1.0) or qty <= 0:
                 return None
             return round(px, 6), max(0.0, qty)
 
-        yes_bids: list[dict[str, float]] = []
-        yes_asks: list[dict[str, float]] = []
-        no_bids: list[dict[str, float]] = []
-        no_asks: list[dict[str, float]] = []
+        def _norm(levels: list[Any]) -> list[dict[str, float]]:
+            out: list[dict[str, float]] = []
+            for level in levels:
+                parsed = _parse_level(level)
+                if parsed:
+                    px, qty = parsed
+                    out.append({"price": px, "qty": qty})
+            return out
+
         container = _extract_container(book or {})
-        bids = _extract_levels(container, "bids")
-        offers = _extract_levels(container, "offers")
-        asks = _extract_levels(container, "asks")
-        ask_side = offers or asks
-        for level in bids:
-            parsed = _parse_level(level)
-            if not parsed:
-                continue
-            px, qty = parsed
-            yes_bids.append({"price": px, "qty": qty})
-        for level in ask_side:
-            parsed = _parse_level(level)
-            if not parsed:
-                continue
-            px, qty = parsed
-            yes_asks.append({"price": px, "qty": qty})
+        yes_bids = _norm(_extract_levels(container, ("yes_bids", "yesBids", "bids")))
+        yes_asks = _norm(_extract_levels(container, ("yes_asks", "yesAsks", "offers", "asks")))
+        no_bids = _norm(_extract_levels(container, ("no_bids", "noBids")))
+        no_asks = _norm(_extract_levels(container, ("no_asks", "noAsks")))
 
-        if yes_bids and not no_asks:
-            for level in yes_bids:
-                comp = max(0.01, min(0.99, 1.0 - float(level["price"])))
-                no_asks.append({"price": round(comp, 6), "qty": float(level["qty"])})
-        if yes_asks and not no_bids:
-            for level in yes_asks:
-                comp = max(0.01, min(0.99, 1.0 - float(level["price"])))
-                no_bids.append({"price": round(comp, 6), "qty": float(level["qty"])})
+        if (yes_bids or yes_asks) and not (no_bids or no_asks):
+            no_bids = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in yes_asks]
+            no_asks = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in yes_bids]
+        if (no_bids or no_asks) and not (yes_bids or yes_asks):
+            yes_bids = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in no_asks]
+            yes_asks = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in no_bids]
 
-        if not any((yes_bids, yes_asks, no_bids, no_asks)):
-            nested_keys: dict[str, list[str]] = {}
-            for nested in ("book", "orderbook", "market"):
-                nested_val = (book or {}).get(nested)
-                if isinstance(nested_val, dict):
-                    nested_keys[nested] = sorted(list(nested_val.keys()))
-            log.warning(
-                "orderbook_normalization_empty ticker=%s top_keys=%s nested_keys=%s bids=%d offers=%d asks=%d yes_bids=%d yes_asks=%d no_bids=%d no_asks=%d",
-                slug,
-                sorted(list((book or {}).keys())),
-                nested_keys,
-                len(bids),
-                len(offers),
-                len(asks),
-                len(yes_bids),
-                len(yes_asks),
-                len(no_bids),
-                len(no_asks),
-            )
+        if not any((yes_bids, yes_asks, no_bids, no_asks)) and any(isinstance(container.get(k), list) for k in ("bids", "offers", "asks", "yes_bids", "yes_asks", "no_bids", "no_asks")):
+            log.warning("orderbook_normalization_unusable ticker=%s top_keys=%s", slug, sorted(list((book or {}).keys())))
 
-        return {
-            "ticker": slug,
-            "yes_bids": yes_bids,
-            "yes_asks": yes_asks,
-            "no_bids": no_bids,
-            "no_asks": no_asks,
-            "bids": bids,
-            "offers": offers,
-            "raw": book,
-        }
+        return {"ticker": slug, "yes_bids": yes_bids, "yes_asks": yes_asks, "no_bids": no_bids, "no_asks": no_asks, "raw": book}
+
 
     async def get_open_markets(self) -> list[dict[str, Any]]:
         return await self.get_all_open_markets()

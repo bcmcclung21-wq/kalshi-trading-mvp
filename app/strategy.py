@@ -47,7 +47,8 @@ class RuntimeTuning:
     min_open_interest: float = 2.0
     max_spread_cents: float = 20.0
     min_minutes_to_close: int = 20
-    max_days_to_close: int = 1
+    max_days_to_close: int = 2
+    market_timezone: str = "America/New_York"
     max_settlement_window_hours: int = 36
     # SAME_DAY_ONLY now means "enforce near-term settlement window (no futures)"
     # rather than strict UTC calendar-day equality.
@@ -84,7 +85,8 @@ TUNING = RuntimeTuning(
     min_open_interest=_env_float("MIN_OPEN_INTEREST", 2.0),
     max_spread_cents=_env_float("MAX_SPREAD_CENTS", 20.0),
     min_minutes_to_close=_env_int("MIN_MINUTES_TO_CLOSE", 20),
-    max_days_to_close=_env_int("MAX_DAYS_TO_CLOSE", 1),
+    max_days_to_close=_env_int("MAX_DAYS_TO_CLOSE", 2),
+    market_timezone=os.getenv("MARKET_TIMEZONE", "America/New_York"),
     max_settlement_window_hours=_env_int("MAX_SETTLEMENT_WINDOW_HOURS", 36),
     same_day_only=_env_bool("SAME_DAY_ONLY", True),
     min_projection_score=_env_float("MIN_PROJECTION_SCORE", 50.0),

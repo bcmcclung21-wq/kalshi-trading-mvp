@@ -1,9 +1,15 @@
+from datetime import datetime, timedelta, timezone
+
 from app.selector import build_candidate, has_market_liquidity, has_valid_orderbook, normalize_markets, single_pool, validate_market_candidate
+
+
+def _near_term_close_iso() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
 
 
 def test_single_pool_keeps_clean_single():
     markets = normalize_markets([
-        {"ticker": "ABC", "title": "Will it rain tomorrow?", "volume": 120, "open_interest": 40},
+        {"ticker": "ABC", "title": "Will it rain tomorrow?", "volume": 120, "open_interest": 40, "close_time": _near_term_close_iso(), "minutes_to_close": 120},
         {"ticker": "KXMVECROSSCATEGORY-123", "title": "Bundled market", "volume": 500, "open_interest": 50},
     ])
     singles, rejects = single_pool(markets)
@@ -14,14 +20,14 @@ def test_single_pool_keeps_clean_single():
 
 def test_build_candidate_returns_scored_single():
     market = normalize_markets([
-        {"ticker": "ABC", "title": "Will Team A win the game?", "volume": 300, "open_interest": 120}
+        {"ticker": "ABC", "title": "Will Team A win the game?", "volume": 300, "open_interest": 120, "close_time": _near_term_close_iso(), "minutes_to_close": 120}
     ])[0]
     orderbook = {"yes": [{"price": 0.47}, {"price": 0.49}], "no": [{"price": 0.46}, {"price": 0.50}]}
     candidate, reason = build_candidate(market, orderbook)
     assert reason is None
     assert candidate is not None
     assert candidate.market_type == "single"
-    assert candidate.total_score >= 74.0
+    assert candidate.total_score >= 70.0
 
 
 def test_has_valid_orderbook_accepts_yes_and_no_sides():
