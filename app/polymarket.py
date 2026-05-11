@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from app.classifier import normalized_market
 from app.config import settings
 
 try:
@@ -100,29 +101,25 @@ class PolymarketClient:
         raise ValueError(f"unsupported_path={path}")
 
     def _normalize_market(self, raw: dict[str, Any]) -> dict[str, Any]:
-        slug = str(raw.get("slug") or raw.get("marketSlug") or raw.get("market_slug") or "").strip()
-        event_slug = str(raw.get("eventSlug") or raw.get("event_slug") or "").strip()
+        normalized = normalized_market(raw) or {}
+        slug = str(normalized.get("ticker") or raw.get("slug") or raw.get("marketSlug") or raw.get("market_slug") or "").strip()
         last_trade = _safe_float((raw.get("stats") or {}).get("lastTradePx"), _safe_float(raw.get("lastTradePx")))
         open_interest = _safe_float((raw.get("stats") or {}).get("openInterest"), _safe_float(raw.get("openInterest")))
-        return {
+        base = {
             "ticker": slug,
             "market_ticker": slug,
-            "event_ticker": event_slug,
-            "title": str(raw.get("title") or raw.get("question") or slug),
-            "subtitle": str(raw.get("description") or raw.get("outcome") or ""),
+            "event_ticker": str(normalized.get("event_ticker") or raw.get("eventSlug") or raw.get("event_slug") or "").strip(),
+            "title": str(normalized.get("title") or raw.get("title") or raw.get("question") or slug),
+            "subtitle": str(normalized.get("subtitle") or raw.get("description") or raw.get("outcome") or ""),
             "status": "open" if bool(raw.get("active", True)) and not bool(raw.get("closed", False)) else "closed",
             "volume": _safe_float(raw.get("volume")),
             "volume_24h": _safe_float(raw.get("volume")),
             "open_interest": open_interest,
             "liquidity": _safe_float(raw.get("liquidity")),
             "last_price": last_trade,
-            "close_time": str(raw.get("closeTime") or raw.get("close_time") or ""),
-            "expiration_time": str(raw.get("settledAt") or raw.get("settled_at") or ""),
-            "category": str(raw.get("category") or "").lower(),
-            "market_type": "single",
-            "legs": 1,
             "_raw": raw,
         }
+        return {**base, **normalized}
 
     def _normalize_orderbook(self, slug: str, book: dict[str, Any]) -> dict[str, Any]:
         yes_bids: list[dict[str, float]] = []
