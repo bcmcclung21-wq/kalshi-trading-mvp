@@ -1,11 +1,11 @@
-# Kalshi Scalable MVP
+# Poly Trading MVP
 
-A clean, scalable, singles-first Kalshi trading application.
+A clean, scalable, singles-first Polymarket US trading application.
 
 ## Core product goals
 - Support five categories: sports, politics, crypto, climate, economics
 - Prioritize high-confidence single-leg trades
-- Allow rare sports-only combos up to 4 legs when enabled
+- Keep execution aligned with the Polymarket US Python SDK
 - Use fixed bankroll rules:
   - 1 leg: 2.00%
   - 2 legs: 1.00%
@@ -14,12 +14,17 @@ A clean, scalable, singles-first Kalshi trading application.
 - Use research, confidence, and market quality first; EV is a bonus, not the sole selector
 - Run a daily audit to learn from prior trades
 
-## Required environment variables
-- `KALSHI_API_KEY_ID`
-- `KALSHI_PRIVATE_KEY_PEM`
+## Required Railway environment variables
+- `POLYMARKET_KEY_ID`
+- `POLYMARKET_SECRET_KEY`
 - `DASHBOARD_BASE_URL`
 
-No other environment variables are required for the minimal production version.
+## Recommended runtime variables
+- `APP_NAME=Poly Trading MVP`
+- `AUTO_EXECUTE=false` while validating credentials
+- `ALLOW_COMBOS=false`
+
+No wallet private key, passphrase, signature type, or funder address are required for the Polymarket US SDK path.
 
 ## Local run
 ```bash
