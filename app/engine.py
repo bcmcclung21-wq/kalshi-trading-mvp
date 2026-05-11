@@ -53,6 +53,7 @@ class TradingEngine:
         self.liquidity: LiquidityEngine | None = None
         self._last_discovery_refresh = 0.0
         self._last_liquidity_refresh = 0.0
+        self._initial_sync_complete = asyncio.Event()
 
     async def start(self) -> None:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
