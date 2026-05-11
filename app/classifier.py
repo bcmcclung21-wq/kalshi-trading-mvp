@@ -1,12 +1,6 @@
-"""Market classifier shared across the trading stack.
-
-Polymarket US market rows are slug-based rather than ticker-based.
-This module normalizes either legacy ticker payloads or Polymarket US
-slug payloads into a common internal contract.
-"""
-
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -20,11 +14,13 @@ PACKAGED_PREFIXES: tuple[str, ...] = (
 
 CATEGORY_PREFIXES: Dict[str, tuple] = {
     "sports": ("nba", "nfl", "mlb", "nhl", "ncaa", "epl", "ufc", "soccer", "wnba", "mls", "nwsl", "win the game", "winner", "vs", "match", "cover", "over", "under", "goal", "score"),
-    "politics": ("election", "president", "senate", "house", "governor", "congress", "scotus"),
+    "politics": ("election", "president", "senate", "house", "governor", "congress", "scotus", "dem", "rep"),
     "crypto": ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "xrp", "crypto", "altcoin", "link"),
     "economics": ("cpi", "ppi", "gdp", "jobs", "payroll", "inflation", "fed", "rate", "unemployment"),
     "climate": ("temperature", "rain", "snow", "wind", "weather", "climate", "hurricane"),
 }
+
+DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -38,6 +34,60 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _extract_date_from_text(*values: Any) -> datetime | None:
+    for value in values:
+        if not value:
+            continue
+        match = DATE_RE.search(str(value))
+        if not match:
+            continue
+        try:
+            day = datetime.strptime(match.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return day.replace(hour=23, minute=59, second=59, microsecond=0)
+        except Exception:
+            continue
+    return None
+
+
+def _infer_close_dt(raw: Dict[str, Any], ticker: str, event_ticker: str, title: str, subtitle: str) -> tuple[datetime | None, str]:
+    direct_keys = (
+        "close_time",
+        "closeTime",
+        "expiration_time",
+        "expirationTime",
+        "settledAt",
+        "settled_at",
+        "marketCloseTime",
+        "endDate",
+        "end_date",
+        "startsAt",
+        "startTime",
+    )
+    for key in direct_keys:
+        dt = _parse_dt(raw.get(key))
+        if dt:
+            return dt, key
+
+    slug_dt = _extract_date_from_text(ticker, event_ticker, title, subtitle)
+    if slug_dt:
+        return slug_dt, "slug_date_fallback"
+
+    return None, ""
+
+
 def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
@@ -46,11 +96,24 @@ def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
     if not ticker or not isinstance(ticker, str):
         return None
 
+    event_ticker = str(raw.get("event_ticker") or raw.get("eventSlug") or raw.get("event_slug") or "")
+    title = str(raw.get("title") or raw.get("question") or raw.get("marketTitle") or ticker)
+    subtitle = str(raw.get("subtitle") or raw.get("description") or raw.get("outcome") or "")
+
+    close_dt, close_source = _infer_close_dt(raw, ticker, event_ticker, title, subtitle)
+    close_text = close_dt.isoformat() if close_dt else str(raw.get("close_time") or raw.get("closeTime") or "")
+    expiration_text = close_text or str(raw.get("expiration_time") or raw.get("settledAt") or "")
+
+    minutes_to_close: float | None = None
+    if close_dt:
+        now = datetime.now(timezone.utc)
+        minutes_to_close = max(0.0, (close_dt - now).total_seconds() / 60.0)
+
     base: Dict[str, Any] = {
         "ticker": ticker,
-        "event_ticker": raw.get("event_ticker") or raw.get("eventSlug") or raw.get("event_slug") or "",
-        "title": raw.get("title") or raw.get("question") or raw.get("marketTitle") or ticker,
-        "subtitle": raw.get("subtitle") or raw.get("description") or raw.get("outcome") or "",
+        "event_ticker": event_ticker,
+        "title": title,
+        "subtitle": subtitle,
         "status": raw.get("status") or ("open" if raw.get("active", True) and not raw.get("closed", False) else "closed"),
         "yes_bid": raw.get("yes_bid"),
         "yes_ask": raw.get("yes_ask"),
@@ -60,15 +123,16 @@ def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
         "volume": raw.get("volume") or 0,
         "volume_24h": raw.get("volume_24h") or raw.get("volume") or 0,
         "open_interest": raw.get("open_interest") or raw.get("openInterest") or _as_float((raw.get("stats") or {}).get("openInterest")),
-        "close_time": raw.get("close_time") or raw.get("closeTime") or raw.get("settledAt"),
-        "expiration_time": raw.get("expiration_time") or raw.get("closeTime") or raw.get("settledAt"),
+        "close_time": close_text,
+        "expiration_time": expiration_text,
+        "minutes_to_close": minutes_to_close,
+        "_close_time_source": close_source,
         "_raw": raw,
     }
 
     base["category"] = _detect_category_for_payload(raw, base)
     base["market_type"] = _infer_market_type_for_payload(raw, base)
     base["legs"] = _infer_legs(raw, base["market_type"])
-    base["minutes_to_close"] = _minutes_to_close(raw)
     return base
 
 
@@ -134,21 +198,5 @@ def _infer_legs(raw: Dict[str, Any], market_type: str) -> int:
     return 2
 
 
-def _minutes_to_close(raw: Dict[str, Any]) -> float | None:
-    close_value = raw.get("close_time") or raw.get("closeTime") or raw.get("expiration_time") or raw.get("settledAt")
-    if not close_value:
-        return None
-    try:
-        text = str(close_value).replace("Z", "+00:00")
-        close_dt = datetime.fromisoformat(text)
-        now = datetime.now(timezone.utc)
-        if close_dt.tzinfo is None:
-            close_dt = close_dt.replace(tzinfo=timezone.utc)
-        return max(0.0, (close_dt - now).total_seconds() / 60.0)
-    except Exception:
-        return None
-
-
 def is_singleton_binary(market: Any) -> bool:
     return infer_market_type(market) == "single" and not is_packaged_market(market)
-
