@@ -11,7 +11,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from app.config import settings
 from app.db import SessionLocal, init_db, verify_required_tables
@@ -24,7 +24,6 @@ from app.strategy import BANKROLL_RULES, CATEGORIES, TUNING
 logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="app/templates")
 
-
 BOOT_STATUS = {
     "stage": "pre_lifespan",
     "started_at": time.time(),
@@ -33,6 +32,170 @@ BOOT_STATUS = {
     "last_error": None,
     "skip_db_bootstrap": os.getenv("SKIP_DB_BOOTSTRAP", "").strip() in ("1", "true", "True", "yes"),
 }
+
+
+def _loads(value: str | None, default):
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def _dt(value):
+    return value.isoformat() if value is not None else None
+
+
+def _dashboard_payload() -> dict:
+    engine_summary = {}
+    try:
+        engine_summary = app.state.engine.snapshot_summary()
+    except Exception as exc:
+        engine_summary = {"error": str(exc)}
+
+    with SessionLocal() as db:
+        latest_candidates = db.execute(select(CandidateRun).order_by(desc(CandidateRun.id)).limit(25)).scalars().all()
+        latest_orders = db.execute(select(OrderRecord).order_by(desc(OrderRecord.id)).limit(25)).scalars().all()
+        latest_positions = db.execute(select(PositionSnapshot).order_by(desc(PositionSnapshot.id)).limit(25)).scalars().all()
+        latest_audits = db.execute(select(AuditRun).order_by(desc(AuditRun.id)).limit(10)).scalars().all()
+        latest_notes = db.execute(select(ResearchNote).order_by(desc(ResearchNote.id)).limit(20)).scalars().all()
+
+        totals = {
+            "market_count": db.query(MarketSnapshot).count(),
+            "candidate_count": db.query(CandidateRun).count(),
+            "order_count": db.query(OrderRecord).count(),
+            "position_snapshots": db.query(PositionSnapshot).count(),
+            "audit_count": db.query(AuditRun).count(),
+            "submitted_count": db.query(OrderRecord).filter(OrderRecord.status == "submitted").count(),
+            "dry_run_count": db.query(OrderRecord).filter(OrderRecord.dry_run.is_(True)).count(),
+            "won_count": db.query(OrderRecord).filter(OrderRecord.status == "won").count(),
+            "lost_count": db.query(OrderRecord).filter(OrderRecord.status == "lost").count(),
+            "settled_count": db.query(OrderRecord).filter(OrderRecord.status.in_(["won", "lost", "settled"])).count(),
+            "gross_realized_pnl": float(db.query(func.coalesce(func.sum(OrderRecord.realized_pnl), 0.0)).scalar() or 0.0),
+        }
+
+        candidates = [
+            {
+                "cycle_at": _dt(row.cycle_at),
+                "ticker": row.ticker,
+                "category": row.category,
+                "market_type": row.market_type,
+                "side": row.side,
+                "entry_price": row.entry_price,
+                "spread_cents": row.spread_cents,
+                "projection_score": row.projection_score,
+                "research_score": row.research_score,
+                "confidence_score": row.confidence_score,
+                "confirmation_score": row.confirmation_score,
+                "ev_bonus": row.ev_bonus,
+                "total_score": row.total_score,
+                "rationale": row.rationale,
+                "details": _loads(row.details_json, {}),
+            }
+            for row in latest_candidates
+        ]
+
+        orders = [
+            {
+                "created_at": _dt(row.created_at),
+                "ticker": row.ticker,
+                "category": row.category,
+                "side": row.side,
+                "market_type": row.market_type,
+                "legs": row.legs,
+                "count": row.count,
+                "price_cents": row.price_cents,
+                "bankroll_pct": row.bankroll_pct,
+                "status": row.status,
+                "dry_run": row.dry_run,
+                "rationale": row.rationale,
+                "realized_pnl": row.realized_pnl,
+                "settled_at": _dt(row.settled_at),
+                "estimated_win_probability": row.estimated_win_probability,
+                "features": _loads(row.features_json, {}),
+                "raw": _loads(row.raw_json, {}),
+            }
+            for row in latest_orders
+        ]
+
+        positions = [
+            {
+                "snapshot_at": _dt(row.snapshot_at),
+                "ticker": row.ticker,
+                "category": row.category,
+                "side": row.side,
+                "quantity": row.quantity,
+                "avg_price": row.avg_price,
+                "status": row.status,
+                "raw": _loads(row.raw_json, {}),
+            }
+            for row in latest_positions
+        ]
+
+        audits = [
+            {
+                "audit_date": row.audit_date,
+                "created_at": _dt(row.created_at),
+                "total_trades": row.total_trades,
+                "wins": row.wins,
+                "losses": row.losses,
+                "win_rate": row.win_rate,
+                "gross_pnl": row.gross_pnl,
+                "by_category": _loads(row.by_category_json, {}),
+                "issues": _loads(row.issues_json, {}),
+                "improvements": _loads(row.improvements_json, []),
+                "feature_breakdown": _loads(row.feature_breakdown_json, {}),
+                "calibration": _loads(row.calibration_json, {}),
+                "learning_summary": _loads(row.learning_summary_json, {}),
+            }
+            for row in latest_audits
+        ]
+
+        notes = [
+            {
+                "created_at": _dt(row.created_at),
+                "ticker": row.ticker,
+                "category": row.category,
+                "projection_score": row.projection_score,
+                "research_score": row.research_score,
+                "confidence_score": row.confidence_score,
+                "confirmation_score": row.confirmation_score,
+                "ev_bonus": row.ev_bonus,
+                "rationale": row.rationale,
+                "tags": _loads(row.tags_json, []),
+                "source": row.source,
+            }
+            for row in latest_notes
+        ]
+
+    latest_audit = audits[0] if audits else None
+    return {
+        "boot_status": {
+            **BOOT_STATUS,
+            "uptime_sec": round(time.time() - BOOT_STATUS["started_at"], 1),
+        },
+        "engine_summary": engine_summary,
+        "runtime": {
+            "auto_execute": TUNING.auto_execute,
+            "allow_combos": TUNING.allow_combos,
+            "same_day_only": getattr(TUNING, "same_day_only", False),
+            "min_minutes_to_close": TUNING.min_minutes_to_close,
+            "max_days_to_close": TUNING.max_days_to_close,
+            "max_orders_per_cycle": TUNING.max_orders_per_cycle,
+            "max_orderbooks_per_cycle": TUNING.max_orderbooks_per_cycle,
+            "max_category_exposure_pct": TUNING.max_category_exposure_pct,
+        },
+        "totals": totals,
+        "candidates": candidates,
+        "orders": orders,
+        "positions": positions,
+        "audits": audits,
+        "latest_audit": latest_audit,
+        "research_notes": notes,
+        "categories": CATEGORIES,
+        "bankroll_rules": BANKROLL_RULES,
+    }
 
 
 @asynccontextmanager
@@ -114,20 +277,20 @@ async def debug_status():
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    try:
-        summary = request.app.state.engine.snapshot_summary()
-    except Exception as exc:
-        return HTMLResponse(f"<pre>boot_status={BOOT_STATUS}\nerror={exc}</pre>", status_code=503)
+    payload = _dashboard_payload()
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
-            "summary": summary,
+            "dashboard": payload,
             "settings": settings,
-            "categories": CATEGORIES,
-            "bankroll_rules": BANKROLL_RULES,
         },
     )
+
+
+@app.get("/api/dashboard")
+async def api_dashboard():
+    return _dashboard_payload()
 
 
 @app.get("/api/summary")
@@ -156,6 +319,7 @@ async def api_markets(limit: int = 50):
                 "title": row.title,
                 "category": row.category,
                 "market_type": row.market_type,
+                "close_time": row.close_time,
                 "volume": row.volume,
                 "open_interest": row.open_interest,
                 "updated_at": row.updated_at.isoformat(),
@@ -166,79 +330,22 @@ async def api_markets(limit: int = 50):
 
 @app.get("/api/candidates")
 async def api_candidates(limit: int = 50):
-    with SessionLocal() as db:
-        rows = db.execute(select(CandidateRun).order_by(desc(CandidateRun.id)).limit(limit)).scalars().all()
-        return [
-            {
-                "ticker": row.ticker,
-                "category": row.category,
-                "market_type": row.market_type,
-                "side": row.side,
-                "entry_price": row.entry_price,
-                "spread_cents": row.spread_cents,
-                "total_score": row.total_score,
-                "rationale": row.rationale,
-            }
-            for row in rows
-        ]
+    return _dashboard_payload()["candidates"][:limit]
 
 
 @app.get("/api/orders")
 async def api_orders(limit: int = 50):
-    with SessionLocal() as db:
-        rows = db.execute(select(OrderRecord).order_by(desc(OrderRecord.id)).limit(limit)).scalars().all()
-        return [
-            {
-                "ticker": row.ticker,
-                "category": row.category,
-                "side": row.side,
-                "market_type": row.market_type,
-                "legs": row.legs,
-                "count": row.count,
-                "status": row.status,
-                "dry_run": row.dry_run,
-                "created_at": row.created_at.isoformat(),
-            }
-            for row in rows
-        ]
+    return _dashboard_payload()["orders"][:limit]
 
 
 @app.get("/api/positions")
 async def api_positions(limit: int = 50):
-    with SessionLocal() as db:
-        rows = db.execute(select(PositionSnapshot).order_by(desc(PositionSnapshot.id)).limit(limit)).scalars().all()
-        return [
-            {
-                "ticker": row.ticker,
-                "category": row.category,
-                "side": row.side,
-                "quantity": row.quantity,
-                "avg_price": row.avg_price,
-                "status": row.status,
-                "snapshot_at": row.snapshot_at.isoformat(),
-            }
-            for row in rows
-        ]
+    return _dashboard_payload()["positions"][:limit]
 
 
 @app.get("/api/audits")
 async def api_audits(limit: int = 10):
-    with SessionLocal() as db:
-        rows = db.execute(select(AuditRun).order_by(desc(AuditRun.id)).limit(limit)).scalars().all()
-        return [
-            {
-                "audit_date": row.audit_date,
-                "total_trades": row.total_trades,
-                "wins": row.wins,
-                "losses": row.losses,
-                "win_rate": row.win_rate,
-                "gross_pnl": row.gross_pnl,
-                "by_category": json.loads(row.by_category_json or "{}"),
-                "issues": json.loads(row.issues_json or "{}"),
-                "improvements": json.loads(row.improvements_json or "[]"),
-            }
-            for row in rows
-        ]
+    return _dashboard_payload()["audits"][:limit]
 
 
 @app.post("/api/research-notes")
