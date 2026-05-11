@@ -236,21 +236,26 @@ class TradingEngine:
         if TUNING.allow_combos:
             pool.extend(combo_pool(markets))
 
-        candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(100, TUNING.max_orderbooks_per_cycle * 5)] if m.get("ticker")]
+        candidate_tickers = [str(m.get("ticker") or "") for m in pool[: max(200, TUNING.max_orderbooks_per_cycle * 10)] if m.get("ticker")]
         try:
             batch_books = await self.poly.get_orderbooks(candidate_tickers, depth=25)
         except Exception:
             logger.exception("orderbook_fetch_unhandled using_partial_data=false")
             batch_books = {}
         liquidity_rank: list[tuple[float, dict]] = []
-        for m in pool:
+        markets_with_books = [m for m in pool if batch_books.get(str(m.get("ticker") or ""))]
+        markets_without_books = [m for m in pool if not batch_books.get(str(m.get("ticker") or ""))]
+        for m in markets_with_books:
             t = str(m.get("ticker") or "")
             if not self.liquidity:
+                liquidity_rank.append((0.5, m))
                 continue
             snap = self.liquidity.evaluate(t, batch_books.get(t, {}))
             if snap and snap.liquidity_score > 0:
                 liquidity_rank.append((snap.liquidity_score, m))
-        pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
+        scored_pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
+        pool = scored_pool + markets_without_books
+        logger.info("liquidity_filter scored=%d unscored=%d total=%d", len(scored_pool), len(markets_without_books), len(pool))
         if self.liquidity:
             logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.liquidity.market_state), len(self.liquidity.active_liquid_markets), len(self.liquidity.inactive_markets), len(self.liquidity.stale_markets))
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)

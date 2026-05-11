@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class LiquidityEngine:
     def __init__(self, cfg: LiquidityConfig | None = None) -> None:
-        self.cfg = cfg or LiquidityConfig(max_slippage=0.04, min_depth_contracts=25.0, max_spread=0.16)
+        self.cfg = cfg or LiquidityConfig(max_slippage=0.06, min_depth_contracts=10.0, max_spread=0.25)
         self.market_state: dict[str, RollingMarketState] = {}
         self.active_liquid_markets: set[str] = set()
         self.inactive_markets: set[str] = set()
