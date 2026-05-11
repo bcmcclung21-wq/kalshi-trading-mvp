@@ -9,29 +9,119 @@
 <body>
   <main class="shell">
     <header class="hero">
-      <h1>Poly Trading MVP</h1>
-      <p>Singles-first, research-assisted, bankroll-disciplined trading dashboard.</p>
+      <div>
+        <h1>Poly Trading MVP</h1>
+        <p>Same-day settlement, singles-first, research-assisted, bankroll-disciplined monitoring.</p>
+      </div>
+      <div class="hero-actions">
+        <button id="refreshBtn" type="button">Refresh</button>
+      </div>
     </header>
 
-    <section class="grid">
+    <section class="metrics" id="kpis"></section>
+
+    <section class="grid-2">
       <article class="card">
-        <h2>System Summary</h2>
-        <pre id="summary">{{ summary | tojson(indent=2) }}</pre>
+        <h2>System Health</h2>
+        <div id="systemHealth"></div>
+      </article>
+      <article class="card">
+        <h2>Execution Posture</h2>
+        <div id="executionPosture"></div>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <h2>Latest Audit — What Went Wrong</h2>
+        <div id="latestIssues"></div>
+      </article>
+      <article class="card">
+        <h2>Latest Audit — What Improves Next</h2>
+        <div id="latestImprovements"></div>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <h2>What Went Well</h2>
+        <div id="whatWentWell"></div>
+      </article>
+      <article class="card">
+        <h2>Learning / Calibration</h2>
+        <div id="learningPanel"></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Selected Trades</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Cycle</th>
+              <th>Ticker</th>
+              <th>Category</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Total</th>
+              <th>Projection</th>
+              <th>Confidence</th>
+              <th>Rationale</th>
+            </tr>
+          </thead>
+          <tbody id="candidatesTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Executed / Proposed Orders</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Created</th>
+              <th>Ticker</th>
+              <th>Category</th>
+              <th>Side</th>
+              <th>Count</th>
+              <th>Price</th>
+              <th>Bankroll %</th>
+              <th>Status</th>
+              <th>PnL</th>
+              <th>Dry Run</th>
+            </tr>
+          </thead>
+          <tbody id="ordersTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <h2>Open / Recent Positions</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Snapshot</th>
+                <th>Ticker</th>
+                <th>Category</th>
+                <th>Side</th>
+                <th>Qty</th>
+                <th>Avg Price</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="positionsTable"></tbody>
+          </table>
+        </div>
       </article>
 
       <article class="card">
-        <h2>Strategy</h2>
-        <ul>
-          {% for category in categories %}
-          <li>{{ category }}</li>
-          {% endfor %}
-        </ul>
-        <h3>Bankroll Rules</h3>
-        <ul>
-          {% for legs, pct in bankroll_rules.items() %}
-          <li>{{ legs }} leg(s): {{ "%.2f"|format(pct * 100) }}%</li>
-          {% endfor %}
-        </ul>
+        <h2>Research Notes</h2>
+        <div id="notesPanel"></div>
       </article>
     </section>
 
@@ -50,6 +140,10 @@
       </form>
     </section>
   </main>
+
+  <script>
+    window.__INITIAL_DASHBOARD__ = {{ dashboard | tojson }};
+  </script>
   <script src="/static/app.js"></script>
 </body>
 </html>
