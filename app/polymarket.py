@@ -125,8 +125,10 @@ class PolymarketClient:
         }
 
     def _normalize_orderbook(self, slug: str, book: dict[str, Any]) -> dict[str, Any]:
-        yes: list[dict[str, float]] = []
-        no: list[dict[str, float]] = []
+        yes_bids: list[dict[str, float]] = []
+        yes_asks: list[dict[str, float]] = []
+        no_bids: list[dict[str, float]] = []
+        no_asks: list[dict[str, float]] = []
 
         bids = list(book.get("bids") or [])[:ORDERBOOK_DEPTH]
         offers = list(book.get("offers") or [])[:ORDERBOOK_DEPTH]
@@ -134,17 +136,27 @@ class PolymarketClient:
             px = _safe_float(level.get("px") if isinstance(level, dict) else None)
             qty = _safe_float(level.get("qty") if isinstance(level, dict) else None, 1.0)
             if px > 0:
-                yes.append({"price": round(px, 6), "qty": qty})
+                yes_bids.append({"price": round(px, 6), "qty": qty})
                 comp = max(0.01, min(0.99, 1.0 - px))
-                no.append({"price": round(comp, 6), "qty": qty})
+                no_asks.append({"price": round(comp, 6), "qty": qty})
         for level in offers:
             px = _safe_float(level.get("px") if isinstance(level, dict) else None)
             qty = _safe_float(level.get("qty") if isinstance(level, dict) else None, 1.0)
             if px > 0:
-                yes.append({"price": round(px, 6), "qty": qty})
+                yes_asks.append({"price": round(px, 6), "qty": qty})
                 comp = max(0.01, min(0.99, 1.0 - px))
-                no.append({"price": round(comp, 6), "qty": qty})
-        return {"ticker": slug, "yes": yes, "no": no, "bids": bids, "offers": offers, "raw": book}
+                no_bids.append({"price": round(comp, 6), "qty": qty})
+
+        return {
+            "ticker": slug,
+            "yes_bids": yes_bids,
+            "yes_asks": yes_asks,
+            "no_bids": no_bids,
+            "no_asks": no_asks,
+            "bids": bids,
+            "offers": offers,
+            "raw": book,
+        }
 
     async def get_open_markets(self) -> list[dict[str, Any]]:
         return await self.get_all_open_markets()
@@ -185,7 +197,7 @@ class PolymarketClient:
                 slug = str(book.get("ticker") or book.get("marketSlug") or "").strip()
                 if not slug:
                     continue
-                if "yes" in book and "no" in book:
+                if all(side in book for side in ("yes_bids", "yes_asks", "no_bids", "no_asks")):
                     out[slug] = book
                 else:
                     out[slug] = self._normalize_orderbook(slug, book)
@@ -198,7 +210,7 @@ class PolymarketClient:
                     books = list((data or {}).get("orderbooks") or [])
                     if books:
                         book = books[0]
-                        out[slug] = book if ("yes" in book and "no" in book) else self._normalize_orderbook(slug, book)
+                        out[slug] = book if all(side in book for side in ("yes_bids", "yes_asks", "no_bids", "no_asks")) else self._normalize_orderbook(slug, book)
                 except Exception as exc:
                     log.warning("orderbook_fetch_failed slug=%s err=%s", slug, str(exc)[:160])
             return out
