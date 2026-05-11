@@ -37,6 +37,18 @@ class MarketState:
 
 
 @dataclass(slots=True)
+class ReconcileStats:
+    fetched_total: int = 0
+    seen_unique: int = 0
+    tracked_after_reconcile: int = 0
+    retained_positions: int = 0
+    retained_strategy: int = 0
+    retained_same_day: int = 0
+    retained_score: int = 0
+    dropped_score: int = 0
+
+
+@dataclass(slots=True)
 class IngestionMetrics:
     fetch_latency_ms: float = 0
     normalization_latency_ms: float = 0
@@ -132,21 +144,53 @@ class MarketDiscoveryEngine:
         spread_penalty = min(spread / 50, 2)
         return liquidity + vol + expiry_boost + strategy_boost + position_boost - spread_penalty
 
-    def reconcile_registry(self, markets: list[dict[str, Any]], strategy_tickers: set[str], position_tickers: set[str]) -> None:
+    @staticmethod
+    def _same_day_eligible(market: dict[str, Any], now_utc: datetime) -> bool:
+        if str(market.get("market_type") or "") != "single":
+            return False
+        close_value = market.get("close_time") or market.get("expiration_time")
+        if not close_value:
+            return False
+        try:
+            close_dt = datetime.fromisoformat(str(close_value).replace("Z", "+00:00"))
+            if close_dt.tzinfo is None:
+                close_dt = close_dt.replace(tzinfo=timezone.utc)
+            close_dt = close_dt.astimezone(timezone.utc)
+        except ValueError:
+            return False
+        return close_dt.date() == now_utc.date()
+
+    def reconcile_registry(self, markets: list[dict[str, Any]], strategy_tickers: set[str], position_tickers: set[str]) -> ReconcileStats:
+        stats = ReconcileStats(fetched_total=len(markets))
         now_ms = int(time.time() * 1000)
+        now_utc = datetime.now(timezone.utc)
         seen: set[str] = set()
         for market in markets:
             ticker = str(market.get("ticker") or "")
             if not ticker or ticker in seen:
                 continue
             seen.add(ticker)
+            stats.seen_unique += 1
             score = self._score_market(market, strategy_tickers, position_tickers)
-            if score < 0.2:
+            keep_for_position = ticker in position_tickers
+            keep_for_strategy = ticker in strategy_tickers
+            keep_for_same_day = self._same_day_eligible(market, now_utc)
+            keep_for_score = score >= 0.2
+            if not (keep_for_position or keep_for_strategy or keep_for_same_day or keep_for_score):
+                stats.dropped_score += 1
                 continue
             expires_at = now_ms + self.ttl_seconds * 1000
             current = self.tracked_markets.get(ticker)
             version = current.version if current else MarketUpdateVersion(0, now_ms)
             self.tracked_markets[ticker] = MarketState(ticker=ticker, market=market, score=score, added_at_ms=current.added_at_ms if current else now_ms, expires_at_ms=expires_at, last_seen_ms=now_ms, version=version)
+            if keep_for_position:
+                stats.retained_positions += 1
+            if keep_for_strategy:
+                stats.retained_strategy += 1
+            if keep_for_same_day:
+                stats.retained_same_day += 1
+            if keep_for_score:
+                stats.retained_score += 1
 
         stale = [k for k, v in self.tracked_markets.items() if v.expires_at_ms < now_ms]
         for ticker in stale:
@@ -154,6 +198,8 @@ class MarketDiscoveryEngine:
         if len(self.tracked_markets) > self.max_tracked:
             ranked = sorted(self.tracked_markets.values(), key=lambda m: m.score, reverse=True)[: self.max_tracked]
             self.tracked_markets = {m.ticker: m for m in ranked}
+        stats.tracked_after_reconcile = len(self.tracked_markets)
+        return stats
 
 
 class AdaptiveRateLimiter:
