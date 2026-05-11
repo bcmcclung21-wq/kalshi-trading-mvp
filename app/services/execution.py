@@ -19,6 +19,9 @@ async def execute_candidate(exchange, db, candidate, bankroll_usd: float) -> Ord
             count=count,
             price_cents=int(round(candidate.entry_price * 100)),
         )
+    details = candidate.details or {}
+    features = details.get("features") or {}
+    win_prob = float(details.get("estimated_win_probability") or 0.0)
     order = OrderRecord(
         ticker=candidate.ticker,
         category=candidate.category,
@@ -33,6 +36,8 @@ async def execute_candidate(exchange, db, candidate, bankroll_usd: float) -> Ord
         dry_run=not TUNING.auto_execute,
         rationale=candidate.rationale,
         raw_json=json.dumps(payload),
+        features_json=json.dumps(features),
+        estimated_win_probability=win_prob,
     )
     db.add(order)
     return order
