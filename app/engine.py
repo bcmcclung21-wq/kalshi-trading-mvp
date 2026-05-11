@@ -145,11 +145,35 @@ class TradingEngine:
                     logger.warning("sync_markets_cache_empty falling_back_to_fetch")
                     markets = await self.poly.get_open_markets()
                     markets_source = "fallback_fetch"
-            logger.info("sync_markets_source=%s count=%d", markets_source, len(markets))
+            logger.info("sync_markets_source=%s total_fetched_markets=%d", markets_source, len(markets))
             api_round_trip_ok = self.mode != EngineMode.BOOT or self.poly.last_paginate_pages > 0
-            strategy_tickers: set[str] = set()
+            strategy_tickers = {
+                str(m.get("ticker") or "")
+                for m in normalize_markets(markets)
+                if str(m.get("ticker") or "")
+            }
             position_tickers = {str(p.get("ticker") or "") for p in await self.poly.get_positions()}
-            self.discovery.reconcile_registry(markets, strategy_tickers=strategy_tickers, position_tickers=position_tickers)
+            logger.info(
+                "sync_markets_inputs strategy_tickers=%d position_tickers=%d",
+                len(strategy_tickers),
+                len(position_tickers),
+            )
+            reconcile_stats = self.discovery.reconcile_registry(
+                markets,
+                strategy_tickers=strategy_tickers,
+                position_tickers=position_tickers,
+            )
+            logger.info(
+                "sync_markets_reconcile fetched=%d unique=%d tracked=%d retained_positions=%d retained_strategy=%d retained_same_day=%d retained_score=%d dropped=%d",
+                reconcile_stats.fetched_total,
+                reconcile_stats.seen_unique,
+                reconcile_stats.tracked_after_reconcile,
+                reconcile_stats.retained_positions,
+                reconcile_stats.retained_strategy,
+                reconcile_stats.retained_same_day,
+                reconcile_stats.retained_score,
+                reconcile_stats.dropped_score,
+            )
             for ticker, state in self.discovery.tracked_markets.items():
                 await self.pipeline.enqueue(ticker, state.market, self.pipeline.next_version())
             await self.pipeline.run_once()
