@@ -106,6 +106,10 @@ class OrderRecord(Base):
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True)
     rationale: Mapped[str] = mapped_column(Text, default="")
     raw_json: Mapped[str] = mapped_column(Text, default="{}")
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    features_json: Mapped[str] = mapped_column(Text, default="{}")
+    estimated_win_probability: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class PositionSnapshot(Base):
@@ -136,6 +140,9 @@ class AuditRun(Base):
     issues_json: Mapped[str] = mapped_column(Text, default="{}")
     improvements_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    feature_breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
+    calibration_json: Mapped[str] = mapped_column(Text, default="{}")
+    learning_summary_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
 class MarketMicrostructureState(Base):
@@ -153,3 +160,16 @@ class MarketMicrostructureState(Base):
     volatility_score: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(16), default="inactive", index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class LearnedPrior(Base):
+    __tablename__ = "learned_priors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    feature_key: Mapped[str] = mapped_column(String(64), index=True)
+    bucket: Mapped[str] = mapped_column(String(64), index=True)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    win_rate: Mapped[float] = mapped_column(Float, default=0.5)
+    multiplier: Mapped[float] = mapped_column(Float, default=1.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, index=True)
