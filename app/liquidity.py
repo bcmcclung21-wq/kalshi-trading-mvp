@@ -43,11 +43,24 @@ class RollingMarketState:
 
 
 def _levels(side: list[Any]) -> list[tuple[float, float]]:
+    def _normalize_price(price: float) -> float:
+        if price <= 0:
+            return 0.0
+        if 0 < price < 1:
+            return price
+        if 1 <= price <= 100:
+            return price / 100.0
+        if 100 < price <= 1000:
+            return price / 1000.0
+        if 1000 < price <= 10000:
+            return price / 10000.0
+        return 0.0
+
     out: list[tuple[float, float]] = []
     for lvl in side or []:
         if isinstance(lvl, dict):
             try:
-                p = float(lvl.get("price") or lvl.get("px") or lvl.get("value") or 0.0)
+                p = float((lvl.get("price") or lvl.get("px") or lvl.get("value") or 0.0).get("value") if isinstance((lvl.get("price") or lvl.get("px") or lvl.get("value") or 0.0), dict) else (lvl.get("price") or lvl.get("px") or lvl.get("value") or 0.0))
                 q = float(lvl.get("qty") or lvl.get("quantity") or lvl.get("size") or lvl.get("count") or 0.0)
             except (TypeError, ValueError):
                 continue
@@ -58,6 +71,7 @@ def _levels(side: list[Any]) -> list[tuple[float, float]]:
                 continue
         else:
             continue
+        p = _normalize_price(p)
         if 0.0 < p < 1.0 and q > 0:
             out.append((p, q))
     return out

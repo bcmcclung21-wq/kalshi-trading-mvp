@@ -122,8 +122,21 @@ class PolymarketClient:
         return {**base, **normalized}
 
     def _normalize_orderbook(self, slug: str, book: dict[str, Any]) -> dict[str, Any]:
+        def _normalize_price(px: float) -> float:
+            if px <= 0:
+                return 0.0
+            if 0 < px < 1:
+                return px
+            if 1 <= px <= 100:
+                return px / 100.0
+            if 100 < px <= 1000:
+                return px / 1000.0
+            if 1000 < px <= 10000:
+                return px / 10000.0
+            return 0.0
+
         def _extract_container(payload: dict[str, Any]) -> dict[str, Any]:
-            for key in ("book", "orderbook", "market"):
+            for key in ("marketData", "book", "orderbook", "market", "data", "result"):
                 nested = payload.get(key)
                 if isinstance(nested, dict):
                     return nested
@@ -137,10 +150,17 @@ class PolymarketClient:
             return []
 
         def _parse_level(level: Any) -> tuple[float, float] | None:
-            if not isinstance(level, dict):
+            px = 0.0
+            qty = 0.0
+            if isinstance(level, dict):
+                px = _safe_float(level.get("px"), _safe_float(level.get("price"), _safe_float(level.get("value"))))
+                qty = _safe_float(level.get("qty"), _safe_float(level.get("quantity"), _safe_float(level.get("size"), _safe_float(level.get("count"), 1.0))))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                px = _safe_float(level[0])
+                qty = _safe_float(level[1], 1.0)
+            else:
                 return None
-            px = _safe_float(level.get("px"), _safe_float(level.get("price"), _safe_float(level.get("value"))))
-            qty = _safe_float(level.get("qty"), _safe_float(level.get("quantity"), _safe_float(level.get("size"), _safe_float(level.get("count"), 1.0))))
+            px = _normalize_price(px)
             if not (0.0 < px < 1.0) or qty <= 0:
                 return None
             return round(px, 6), max(0.0, qty)
@@ -155,10 +175,14 @@ class PolymarketClient:
             return out
 
         container = _extract_container(book or {})
-        yes_bids = _norm(_extract_levels(container, ("yes_bids", "yesBids", "bids")))
-        yes_asks = _norm(_extract_levels(container, ("yes_asks", "yesAsks", "offers", "asks")))
-        no_bids = _norm(_extract_levels(container, ("no_bids", "noBids")))
-        no_asks = _norm(_extract_levels(container, ("no_asks", "noAsks")))
+        yes_bids_raw = _extract_levels(container, ("yes_bids", "yesBids", "bids", "buy", "buyOrders", "bidLevels"))
+        yes_asks_raw = _extract_levels(container, ("yes_asks", "yesAsks", "offers", "asks", "sell", "sellOrders", "askLevels"))
+        no_bids_raw = _extract_levels(container, ("no_bids", "noBids"))
+        no_asks_raw = _extract_levels(container, ("no_asks", "noAsks"))
+        yes_bids = _norm(yes_bids_raw)
+        yes_asks = _norm(yes_asks_raw)
+        no_bids = _norm(no_bids_raw)
+        no_asks = _norm(no_asks_raw)
 
         if (yes_bids or yes_asks) and not (no_bids or no_asks):
             no_bids = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in yes_asks]
@@ -167,8 +191,32 @@ class PolymarketClient:
             yes_bids = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in no_asks]
             yes_asks = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in no_bids]
 
-        if not any((yes_bids, yes_asks, no_bids, no_asks)) and any(isinstance(container.get(k), list) for k in ("bids", "offers", "asks", "yes_bids", "yes_asks", "no_bids", "no_asks")):
-            log.warning("orderbook_normalization_unusable ticker=%s top_keys=%s", slug, sorted(list((book or {}).keys())))
+        yes_bids = sorted(yes_bids, key=lambda x: x["price"], reverse=True)
+        yes_asks = sorted(yes_asks, key=lambda x: x["price"])
+        no_bids = sorted(no_bids, key=lambda x: x["price"], reverse=True)
+        no_asks = sorted(no_asks, key=lambda x: x["price"])
+
+        if not any((yes_bids, yes_asks, no_bids, no_asks)):
+            top = book or {}
+            nested_keys = {
+                k: sorted(list(v.keys()))
+                for k in ("marketData", "book", "orderbook", "market", "data", "result")
+                if isinstance(top.get(k), dict)
+                for v in [top.get(k)]
+            }
+            log.warning(
+                "orderbook_normalization_empty ticker=%s top_keys=%s nested_keys=%s raw_bid_count=%d raw_ask_count=%d yes_bids=%d yes_asks=%d no_bids=%d no_asks=%d sample=%s",
+                slug,
+                sorted(list(top.keys())) if isinstance(top, dict) else [],
+                nested_keys,
+                len(yes_bids_raw) + len(no_bids_raw),
+                len(yes_asks_raw) + len(no_asks_raw),
+                len(yes_bids),
+                len(yes_asks),
+                len(no_bids),
+                len(no_asks),
+                {"bids": yes_bids_raw[:2], "asks": yes_asks_raw[:2], "no_bids": no_bids_raw[:2], "no_asks": no_asks_raw[:2]},
+            )
 
         return {"ticker": slug, "yes_bids": yes_bids, "yes_asks": yes_asks, "no_bids": no_bids, "no_asks": no_asks, "raw": book}
 
