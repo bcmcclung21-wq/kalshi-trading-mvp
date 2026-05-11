@@ -163,7 +163,7 @@ class TradingEngine:
             self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
             self.state.last_run_metrics["last_sync_saved"] = saved
             if not self._initial_sync_complete.is_set():
-            self._initial_sync_complete.set()
+                self._initial_sync_complete.set()
             logger.info("sync_markets mode=%s tracked=%d fetched=%d saved=%d auth_ok=%s queue_depth=%d", self.mode.value, len(self.discovery.tracked_markets), len(markets), saved, self.poly.auth_status.ok, self.metrics.queue_depth)
 
     async def _with_cycle_lock(self, fn_name: str, fn) -> None:
