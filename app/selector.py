@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import random
 from collections import defaultdict
+import logging
+import os
 from typing import Any
 
 from app.classifier import normalized_market, is_packaged_market
 from app.research import build_research_envelope
 from app.strategy import SPORTS, TUNING
+
+logger = logging.getLogger(__name__)
 
 
 def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
@@ -81,6 +85,15 @@ def _parse_close_dt(market: dict[str, Any]) -> datetime | None:
         return None
 
 
+def _settlement_window_ok(close_dt: datetime, now: datetime) -> bool:
+    minutes = (close_dt - now).total_seconds() / 60.0
+    if minutes < TUNING.min_minutes_to_close:
+        return False
+    if minutes > TUNING.max_settlement_window_hours * 60:
+        return False
+    return True
+
+
 def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
     out = []
     rejects = {
@@ -89,12 +102,36 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "no_liquidity_sign": 0,
         "too_close_to_close": 0,
         "too_far_to_close": 0,
+        "outside_settlement_window": 0,
         "not_same_day_settlement": 0,
         "missing_close_time": 0,
         "packaged_market": 0,
     }
     valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
-    today_utc = datetime.now(timezone.utc).date()
+    now = datetime.now(timezone.utc)
+    max_minutes = max(
+        TUNING.max_days_to_close * 1440,
+        TUNING.max_settlement_window_hours * 60,
+    )
+    too_far_sample: list[dict[str, Any]] = []
+    outside_window_sample: list[dict[str, Any]] = []
+    not_same_day_sample: list[dict[str, Any]] = []
+    missing_close_sample: list[dict[str, Any]] = []
+    closest_markets: list[dict[str, Any]] = []
+
+    def _sample_append(bucket: list[dict[str, Any]], market: dict[str, Any], minutes: float | None) -> None:
+        if len(bucket) >= 5:
+            return
+        bucket.append(
+            {
+                "ticker": market.get("ticker"),
+                "title": market.get("title"),
+                "category": market.get("category"),
+                "close_time": market.get("close_time"),
+                "minutes_to_close": minutes,
+                "source": market.get("_close_time_source"),
+            }
+        )
 
     for market in markets:
         if market.get("market_type") != "single":
@@ -108,28 +145,72 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             continue
 
         minutes = market.get("minutes_to_close")
+        close_dt = _parse_close_dt(market)
+        if close_dt is not None:
+            minutes = (close_dt - now).total_seconds() / 60.0
+            closest_markets.append({"market": market, "minutes": minutes})
+
         if minutes is None:
             rejects["missing_close_time"] += 1
+            _sample_append(missing_close_sample, market, None)
             continue
 
         if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
+            _sample_append(outside_window_sample, market, minutes)
             continue
 
-        if minutes > (TUNING.max_days_to_close * 1440):
+        if minutes > max_minutes:
             rejects["too_far_to_close"] += 1
+            _sample_append(too_far_sample, market, minutes)
             continue
 
         if TUNING.same_day_only:
-            close_dt = _parse_close_dt(market)
             if close_dt is None:
                 rejects["missing_close_time"] += 1
+                _sample_append(missing_close_sample, market, None)
                 continue
-            if close_dt.date() != today_utc:
+            if not _settlement_window_ok(close_dt, now):
+                rejects["outside_settlement_window"] += 1
+                _sample_append(outside_window_sample, market, minutes)
+                continue
+            if close_dt.date() != now.date():
                 rejects["not_same_day_settlement"] += 1
-                continue
+                _sample_append(not_same_day_sample, market, minutes)
 
         out.append(market)
+
+    for reason, sample in (
+        ("too_far_to_close", too_far_sample),
+        ("outside_settlement_window", outside_window_sample),
+        ("not_same_day_settlement", not_same_day_sample),
+        ("missing_close_time", missing_close_sample),
+    ):
+        for item in sample[:5]:
+            logger.info(
+                "timing_reject_sample reason=%s ticker=%s category=%s minutes_to_close=%s close_time=%s source=%s title=%s",
+                reason,
+                item.get("ticker"),
+                item.get("category"),
+                item.get("minutes_to_close"),
+                item.get("close_time"),
+                item.get("source"),
+                item.get("title"),
+            )
+
+    strict_debug = os.getenv("SAME_DAY_STRICT_DEBUG", "false").lower() in {"1", "true", "yes", "y", "on"}
+    if TUNING.same_day_only and strict_debug:
+        for item in sorted(closest_markets, key=lambda x: x["minutes"])[:25]:
+            market = item["market"]
+            logger.info(
+                "timing_closest_debug ticker=%s category=%s minutes_to_close=%s close_time=%s source=%s title=%s",
+                market.get("ticker"),
+                market.get("category"),
+                item["minutes"],
+                market.get("close_time"),
+                market.get("_close_time_source"),
+                market.get("title"),
+            )
     return out, rejects
 
 
