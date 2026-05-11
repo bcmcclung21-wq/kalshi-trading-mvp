@@ -225,6 +225,11 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
             "volume": market.get("volume"),
             "open_interest": market.get("open_interest"),
             "minutes_to_close": market.get("minutes_to_close"),
+            "features": getattr(envelope, "features", None) or {},
+            "estimated_win_probability": getattr(envelope, "estimated_win_probability", 0.0),
+            "expected_value": getattr(envelope, "expected_value", 0.0),
+            "learning_multiplier": getattr(envelope, "learning_multiplier", 1.0),
+            "learning_components": getattr(envelope, "learning_components", {}) or {},
         },
     ), None
 
