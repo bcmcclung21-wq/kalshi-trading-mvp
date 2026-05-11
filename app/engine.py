@@ -11,9 +11,10 @@ from sqlalchemy import desc, select
 
 from app.classifier import detect_category, normalized_market
 from app.db import SessionLocal
+from app.learning import get_learning_engine
 from app.polymarket import PolymarketClient
 from app.state import EngineState
-from app.models import AuditRun, CandidateRun, OrderBookSnapshot, PositionSnapshot, ResearchNote
+from app.models import AuditRun, CandidateRun, OrderBookSnapshot, OrderRecord, PositionSnapshot, ResearchNote
 from app.risk import category_exposure_ok, duplicate_ticker_ok
 from app.selector import best_ask, best_bid, build_candidate, combo_pool, diversified_pool, normalize_markets, rank_candidates, single_pool, validate_market_candidate
 from app.services.audit import summarize_settlements
@@ -57,12 +58,30 @@ class TradingEngine:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
         self.liquidity = LiquidityEngine(LiquidityConfig())
         self.liquidity.load_state()
+        try:
+            get_learning_engine().load()
+        except Exception as exc:
+            logger.warning("learning_engine_load_failed err=%s", exc)
+        try:
+            asyncio.create_task(self._guarded(self._seed_priors_on_boot))
+        except Exception as exc:
+            logger.warning("seed_priors_schedule_failed err=%s", exc)
         self._tasks = [
             asyncio.create_task(self.market_sync_loop()),
             asyncio.create_task(self.trade_cycle_loop()),
             asyncio.create_task(self.reconcile_loop()),
             asyncio.create_task(self.audit_loop()),
         ]
+
+    async def _seed_priors_on_boot(self) -> None:
+        """One-shot rebuild on startup so priors reflect existing settlements
+        before the daily audit window comes around."""
+        await asyncio.sleep(15)
+        try:
+            result = get_learning_engine().rebuild_priors(lookback_days=60)
+            logger.info("learning_priors_seed_on_boot status=%s", result.get("status"))
+        except Exception as exc:
+            logger.warning("learning_priors_seed_failed err=%s", exc)
 
     async def stop(self) -> None:
         for task in self._tasks:
@@ -373,6 +392,35 @@ class TradingEngine:
                     )
                 )
             db.commit()
+
+        if self.poly.auth_status.ok:
+            try:
+                settlements = await self.poly.get_settlements()
+            except Exception as exc:
+                logger.warning("reconcile_settlements_fetch_failed err=%s", exc)
+                settlements = []
+            updated = 0
+            with SessionLocal() as db:
+                for row in settlements:
+                    ticker = str(row.get("ticker") or "")
+                    if not ticker:
+                        continue
+                    pnl = float(row.get("pnl") or 0.0)
+                    status = "won" if pnl > 0 else "lost" if pnl < 0 else "settled"
+                    candidates = db.query(OrderRecord).filter(
+                        OrderRecord.ticker == ticker,
+                        OrderRecord.status.in_(["submitted", "dry_run", "pending"]),
+                    ).all()
+                    for order in candidates:
+                        order.status = status
+                        order.realized_pnl = pnl
+                        order.settled_at = datetime.now(timezone.utc)
+                        updated += 1
+                if updated:
+                    db.commit()
+            if updated:
+                logger.info("reconcile_settled_orders count=%d", updated)
+
         self.state.last_reconcile_at = datetime.now(timezone.utc).isoformat()
         logger.info("reconcile_ok elapsed_s=%.1f positions=%d", time.monotonic() - t0, len(positions))
 
@@ -381,18 +429,50 @@ class TradingEngine:
 
     async def _run_daily_audit_inner(self) -> None:
         settlements = await self.poly.get_settlements()
+
+        feature_lookup: dict[str, dict[str, str]] = {}
+        win_prob_lookup: dict[str, float] = {}
+        try:
+            with SessionLocal() as db:
+                orders = db.query(OrderRecord).filter(
+                    OrderRecord.status.in_(["won", "lost", "settled", "submitted", "dry_run"])
+                ).all()
+                for order in orders:
+                    try:
+                        features = json.loads(order.features_json or "{}")
+                    except (TypeError, ValueError):
+                        features = {}
+                    if features:
+                        feature_lookup[order.ticker] = features
+                    if order.estimated_win_probability:
+                        win_prob_lookup[order.ticker] = float(order.estimated_win_probability)
+        except Exception as exc:
+            logger.warning("audit_feature_lookup_failed err=%s", exc)
+
         prepared = []
         for row in settlements:
+            ticker = row.get("ticker") or ""
+            features = feature_lookup.get(ticker) or {}
             prepared.append(
                 {
-                    "ticker": row.get("ticker"),
+                    "ticker": ticker,
                     "category": detect_category(row),
                     "market_type": row.get("market_type") or "single",
                     "pnl": float(row.get("pnl") or 0.0),
                     "spread_cents": float(row.get("spread_cents") or 0.0),
+                    "features": features,
+                    "estimated_win_probability": win_prob_lookup.get(ticker, 0.0),
                 }
             )
         summary = summarize_settlements(prepared)
+
+        learning_summary: dict = {"status": "skipped"}
+        try:
+            learning_summary = get_learning_engine().rebuild_priors(lookback_days=30)
+        except Exception as exc:
+            logger.warning("learning_rebuild_failed err=%s", exc)
+            learning_summary = {"status": "failed", "error": str(exc)}
+
         with SessionLocal() as db:
             db.add(
                 AuditRun(
@@ -405,9 +485,18 @@ class TradingEngine:
                     by_category_json=json.dumps(summary["by_category"]),
                     issues_json=json.dumps(summary["issues"]),
                     improvements_json=json.dumps(summary["improvements"]),
+                    feature_breakdown_json=json.dumps(summary.get("feature_breakdown") or {}),
+                    calibration_json=json.dumps(summary.get("calibration") or {}),
+                    learning_summary_json=json.dumps(learning_summary or {}),
                 )
             )
             db.commit()
+        logger.info(
+            "audit_complete trades=%d wins=%d losses=%d win_rate=%.3f pnl=%.2f learning=%s improvements=%d",
+            summary["total_trades"], summary["wins"], summary["losses"],
+            summary["win_rate"], summary["gross_pnl"],
+            learning_summary.get("status"), len(summary.get("improvements") or []),
+        )
         self.state.last_audit_at = datetime.now(timezone.utc).isoformat()
 
     def snapshot_summary(self) -> dict:
