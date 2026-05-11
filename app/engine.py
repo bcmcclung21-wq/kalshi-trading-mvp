@@ -339,9 +339,10 @@ class TradingEngine:
                     yes_ask = 1 - no_bid
                 if no_ask <= 0 and yes_bid > 0:
                     no_ask = 1 - yes_bid
+                raw_keys = sorted(list((book.get("raw") or book).keys())) if isinstance((book.get("raw") or book), dict) else []
                 logger.info(
-                    "liquidity_skip ticker=%s reason=no_snapshot_or_quotes yes_bids=%d yes_asks=%d no_bids=%d no_asks=%d yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f",
-                    t, yes_bids_count, yes_asks_count, no_bids_count, no_asks_count, yes_bid, yes_ask, no_bid, no_ask,
+                    "liquidity_skip ticker=%s reason=no_snapshot_or_quotes yes_bids=%d yes_asks=%d no_bids=%d no_asks=%d yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f raw_keys=%s",
+                    t, yes_bids_count, yes_asks_count, no_bids_count, no_asks_count, yes_bid, yes_ask, no_bid, no_ask, raw_keys,
                 )
                 continue
             has_pair = ((snap.yes_bid > 0 and snap.yes_ask > 0) or (snap.no_bid > 0 and snap.no_ask > 0))

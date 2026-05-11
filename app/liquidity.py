@@ -46,10 +46,16 @@ def _levels(side: list[Any]) -> list[tuple[float, float]]:
     out: list[tuple[float, float]] = []
     for lvl in side or []:
         if isinstance(lvl, dict):
-            p = float(lvl.get("price") or lvl.get("px") or lvl.get("value") or 0.0)
-            q = float(lvl.get("qty") or lvl.get("quantity") or lvl.get("size") or lvl.get("count") or 0.0)
+            try:
+                p = float(lvl.get("price") or lvl.get("px") or lvl.get("value") or 0.0)
+                q = float(lvl.get("qty") or lvl.get("quantity") or lvl.get("size") or lvl.get("count") or 0.0)
+            except (TypeError, ValueError):
+                continue
         elif isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
-            p, q = float(lvl[0]), float(lvl[1])
+            try:
+                p, q = float(lvl[0]), float(lvl[1])
+            except (TypeError, ValueError):
+                continue
         else:
             continue
         if 0.0 < p < 1.0 and q > 0:
