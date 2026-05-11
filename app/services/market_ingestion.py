@@ -51,15 +51,15 @@ class IngestionMetrics:
     def to_prometheus(self) -> str:
         return "\n".join(
             [
-                f"kalshi_fetch_latency_ms {self.fetch_latency_ms:.2f}",
-                f"kalshi_normalization_latency_ms {self.normalization_latency_ms:.2f}",
-                f"kalshi_ingestion_queue_depth {self.queue_depth}",
-                f"kalshi_duplicate_suppression_rate {self.duplicate_suppression_rate:.6f}",
-                f"kalshi_cache_hit_rate {self.cache_hit_rate:.6f}",
-                f"kalshi_api_throughput_rps {self.api_throughput_rps:.2f}",
-                f"kalshi_websocket_lag_ms {self.ws_lag_ms:.2f}",
-                f"kalshi_ingested_updates_total {self.ingestion_count}",
-                f"kalshi_duplicate_updates_total {self.duplicate_count}",
+                f"poly_fetch_latency_ms {self.fetch_latency_ms:.2f}",
+                f"poly_normalization_latency_ms {self.normalization_latency_ms:.2f}",
+                f"poly_ingestion_queue_depth {self.queue_depth}",
+                f"poly_duplicate_suppression_rate {self.duplicate_suppression_rate:.6f}",
+                f"poly_cache_hit_rate {self.cache_hit_rate:.6f}",
+                f"poly_api_throughput_rps {self.api_throughput_rps:.2f}",
+                f"poly_websocket_lag_ms {self.ws_lag_ms:.2f}",
+                f"poly_ingested_updates_total {self.ingestion_count}",
+                f"poly_duplicate_updates_total {self.duplicate_count}",
             ]
         )
 
