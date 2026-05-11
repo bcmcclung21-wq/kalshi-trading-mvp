@@ -162,6 +162,8 @@ class TradingEngine:
                 self.mode = EngineMode.LIVE
             self.state.last_sync_at = datetime.now(timezone.utc).isoformat()
             self.state.last_run_metrics["last_sync_saved"] = saved
+            if not self._initial_sync_complete.is_set():
+            self._initial_sync_complete.set()
             logger.info("sync_markets mode=%s tracked=%d fetched=%d saved=%d auth_ok=%s queue_depth=%d", self.mode.value, len(self.discovery.tracked_markets), len(markets), saved, self.poly.auth_status.ok, self.metrics.queue_depth)
 
     async def _with_cycle_lock(self, fn_name: str, fn) -> None:
@@ -212,6 +214,9 @@ class TradingEngine:
             logger.info("circuit_breaker_closed")
             self._trading_disabled_until = 0.0
             self._failure_count = 0
+        if not self._initial_sync_complete.is_set():
+            logger.info("run_cycle_skipped reason=awaiting_initial_sync")
+            return
         t0 = time.perf_counter()
         raw_markets = list(self.market_cache.snapshot().values()) or await self.poly.get_all_open_markets()
         markets = normalize_markets(raw_markets)
