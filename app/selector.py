@@ -10,16 +10,28 @@ from app.research import build_research_envelope
 from app.strategy import SPORTS, TUNING
 
 
+def _side_levels(orderbook: dict[str, Any], side: str) -> list[Any]:
+    direct = list(orderbook.get(side) or [])
+    if direct:
+        return direct
+    # Backward compatibility with pre-normalized synthetic books.
+    if side == "yes_bids":
+        return list(orderbook.get("yes") or [])
+    if side == "no_bids":
+        return list(orderbook.get("no") or [])
+    return []
+
+
 def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
     """Strict validation for Kalshi orderbooks."""
 
     if not orderbook:
         return False
 
-    yes_bids = orderbook.get("yes_bids") or orderbook.get("yes") or []
-    yes_asks = orderbook.get("yes_asks") or []
-    no_bids = orderbook.get("no_bids") or orderbook.get("no") or []
-    no_asks = orderbook.get("no_asks") or []
+    yes_bids = _side_levels(orderbook, "yes_bids")
+    yes_asks = _side_levels(orderbook, "yes_asks")
+    no_bids = _side_levels(orderbook, "no_bids")
+    no_asks = _side_levels(orderbook, "no_asks")
 
     if not yes_bids and not yes_asks:
         return False
@@ -39,6 +51,10 @@ def validate_market_candidate(market: dict[str, Any], orderbook: dict[str, Any])
 
     if not has_valid_orderbook(orderbook):
         return False, "invalid_orderbook"
+
+    quote = _best_quote_side(orderbook)
+    if quote is None:
+        return False, "invalid_bid_ask_pair"
 
     return True, "valid"
 
@@ -149,12 +165,14 @@ def best_ask(levels: list[Any]) -> float:
 
 
 def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | None:
-    yes = list(orderbook.get("yes") or [])
-    no = list(orderbook.get("no") or [])
-    yes_bid = best_bid(yes)
-    yes_ask = best_ask(yes)
-    no_bid = best_bid(no)
-    no_ask = best_ask(no)
+    yes_bid = best_bid(_side_levels(orderbook, "yes_bids"))
+    yes_ask = best_ask(_side_levels(orderbook, "yes_asks"))
+    no_bid = best_bid(_side_levels(orderbook, "no_bids"))
+    no_ask = best_ask(_side_levels(orderbook, "no_asks"))
+    if yes_ask <= 0 and no_bid > 0:
+        yes_ask = 1.0 - no_bid
+    if no_ask <= 0 and yes_bid > 0:
+        no_ask = 1.0 - yes_bid
     if yes_ask <= 0 and no_ask <= 0:
         return None
     yes_spread = max(0.0, (yes_ask - yes_bid) * 100) if yes_ask and yes_bid else 999.0

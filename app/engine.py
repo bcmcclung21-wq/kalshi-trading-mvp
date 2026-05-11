@@ -270,8 +270,17 @@ class TradingEngine:
                 liquidity_rank.append((0.5, m))
                 continue
             snap = self.liquidity.evaluate(t, batch_books.get(t, {}))
-            if snap and snap.liquidity_score > 0:
+            if not snap:
+                logger.info("liquidity_skip ticker=%s reason=no_snapshot_or_quotes", t)
+                continue
+            has_pair = ((snap.yes_bid > 0 and snap.yes_ask > 0) or (snap.no_bid > 0 and snap.no_ask > 0))
+            if not has_pair:
+                logger.info("liquidity_skip ticker=%s reason=no_usable_bid_ask_pair", t)
+                continue
+            if snap.liquidity_score > 0:
                 liquidity_rank.append((snap.liquidity_score, m))
+            else:
+                logger.info("liquidity_zero ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f spread=%.4f depth=%.2f", t, snap.yes_bid, snap.yes_ask, snap.no_bid, snap.no_ask, snap.spread, snap.effective_depth)
         scored_pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
         pool = scored_pool + markets_without_books
         logger.info("liquidity_filter scored=%d unscored=%d total=%d", len(scored_pool), len(markets_without_books), len(pool))
@@ -291,6 +300,19 @@ class TradingEngine:
                     rejected += 1
                     continue
                 is_valid, validation_reason = validate_market_candidate(market, book)
+                yes_bid_px = best_bid(list(book.get("yes_bids") or book.get("yes") or []))
+                yes_ask_px = best_ask(list(book.get("yes_asks") or []))
+                no_bid_px = best_bid(list(book.get("no_bids") or book.get("no") or []))
+                no_ask_px = best_ask(list(book.get("no_asks") or []))
+                if yes_ask_px <= 0 and no_bid_px > 0:
+                    yes_ask_px = 1 - no_bid_px
+                if no_ask_px <= 0 and yes_bid_px > 0:
+                    no_ask_px = 1 - yes_bid_px
+                spread = (yes_ask_px - yes_bid_px) if yes_ask_px > 0 and yes_bid_px > 0 else 0.0
+                logger.info(
+                    "candidate_book ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f spread=%.4f validation=%s",
+                    market.get("ticker"), yes_bid_px, yes_ask_px, no_bid_px, no_ask_px, spread, validation_reason if not is_valid else "precheck_ok"
+                )
                 if not is_valid:
                     logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), validation_reason)
                     rejected += 1
@@ -309,14 +331,12 @@ class TradingEngine:
                     logger.info("candidate_rejected ticker=%s reason=%s", candidate.ticker, "category_exposure")
                     rejected += 1
                     continue
-                no_bid_px = best_bid(list(book.get("no") or []))
-                yes_bid_px = best_bid(list(book.get("yes") or []))
                 ob = OrderBookSnapshot(
                     ticker=candidate.ticker,
                     yes_bid=yes_bid_px,
-                    yes_ask=(1-no_bid_px) if no_bid_px > 0 else 0.0,
+                    yes_ask=yes_ask_px,
                     no_bid=no_bid_px,
-                    no_ask=(1-yes_bid_px) if yes_bid_px > 0 else 0.0,
+                    no_ask=no_ask_px,
                     spread_cents=candidate.spread_cents,
                     raw_json=json.dumps(book),
                 )

@@ -47,7 +47,7 @@ def _levels(side: list[Any]) -> list[tuple[float, float]]:
     for lvl in side or []:
         if isinstance(lvl, dict):
             p = float(lvl.get("price") or 0.0)
-            q = float(lvl.get("quantity") or lvl.get("count") or 0.0)
+            q = float(lvl.get("qty") or lvl.get("quantity") or lvl.get("count") or 0.0)
         elif isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
             p, q = float(lvl[0]), float(lvl[1])
         else:
@@ -58,17 +58,23 @@ def _levels(side: list[Any]) -> list[tuple[float, float]]:
 
 
 def profile_liquidity(ticker: str, orderbook: dict[str, Any], state: RollingMarketState, cfg: LiquidityConfig) -> LiquiditySnapshot | None:
-    yes_bids = _levels(orderbook.get("yes") or orderbook.get("yes_bids") or [])
-    no_bids = _levels(orderbook.get("no") or orderbook.get("no_bids") or [])
-    if not yes_bids and not no_bids:
+    yes_bids = _levels(orderbook.get("yes_bids") or orderbook.get("yes") or [])
+    yes_asks = _levels(orderbook.get("yes_asks") or [])
+    no_bids = _levels(orderbook.get("no_bids") or orderbook.get("no") or [])
+    no_asks = _levels(orderbook.get("no_asks") or [])
+    if not yes_bids and not yes_asks and not no_bids and not no_asks:
         return None
     yes_bid = max([p for p, _ in yes_bids], default=0.0)
     no_bid = max([p for p, _ in no_bids], default=0.0)
-    yes_ask = 1 - no_bid if no_bid > 0 else 0.0
-    no_ask = 1 - yes_bid if yes_bid > 0 else 0.0
+    yes_ask = min([p for p, _ in yes_asks], default=0.0)
+    no_ask = min([p for p, _ in no_asks], default=0.0)
+    if yes_ask <= 0 and no_bid > 0:
+        yes_ask = 1 - no_bid
+    if no_ask <= 0 and yes_bid > 0:
+        no_ask = 1 - yes_bid
     midpoint = mean([x for x in [yes_bid, yes_ask] if x > 0]) if (yes_bid > 0 or yes_ask > 0) else 0.5
     spread = max(0.0, yes_ask - yes_bid) if yes_ask and yes_bid else 1.0
-    all_levels = yes_bids + [(1 - p, q) for p, q in no_bids if 0 < p < 1]
+    all_levels = yes_bids + yes_asks + [(1 - p, q) for p, q in no_bids if 0 < p < 1] + [(1 - p, q) for p, q in no_asks if 0 < p < 1]
     effective_depth = sum(q for p, q in all_levels if abs(p - midpoint) <= cfg.max_slippage)
     executable_size = sum(q for _, q in all_levels)
     ladder_density = len(all_levels) / max(1.0, spread * 100)
