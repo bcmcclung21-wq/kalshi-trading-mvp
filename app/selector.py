@@ -177,6 +177,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             if close_dt.date() != now.date():
                 rejects["not_same_day_settlement"] += 1
                 _sample_append(not_same_day_sample, market, minutes)
+                continue
 
         out.append(market)
 
