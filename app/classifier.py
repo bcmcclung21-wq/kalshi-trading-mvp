@@ -85,7 +85,9 @@ def _infer_close_dt(raw: Dict[str, Any], ticker: str, event_ticker: str, title: 
     if slug_dt:
         return slug_dt, "slug_date_fallback"
 
-    return None, ""
+    now = datetime.now(timezone.utc)
+    default_dt = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    return default_dt, "default_today_eod"
 
 
 def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
