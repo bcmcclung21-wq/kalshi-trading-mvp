@@ -213,7 +213,6 @@ def combo_pool(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def diversified_pool(markets, max_total, per_category):
     from collections import defaultdict
-
     grouped = defaultdict(list)
     for market in markets:
         grouped[str(market.get("category") or "unknown")].append(market)
