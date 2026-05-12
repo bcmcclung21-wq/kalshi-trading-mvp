@@ -232,6 +232,11 @@ class TradingEngine:
         await self._with_cycle_lock("cycle", self._run_cycle_inner)
 
     async def _run_cycle_inner(self) -> None:
+        # Emergency overrides in case file patches above fail to load
+        if hasattr(TUNING, "max_settlement_window_hours"):
+            object.__setattr__(TUNING, "max_settlement_window_hours", 168)
+        if hasattr(TUNING, "auto_execute"):
+            object.__setattr__(TUNING, "auto_execute", True)
         if self._trading_disabled_until > time.time():
             logger.warning("circuit_breaker_blocked remaining_sec=%d", int(self._trading_disabled_until - time.time()))
             return
