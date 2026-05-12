@@ -26,7 +26,7 @@ from app.services.liquidity_engine import LiquidityEngine
 from app.liquidity import LiquidityConfig
 from app.services.resilience import BreakerRegistry
 from app.strategy import TUNING
-from app.calibration import compute_brier, is_trading_halted, persist_snapshot
+from app.calibration import compute_brier, persist_snapshot
 from app.cashout import CashoutManager
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class TradingEngine:
         self._last_audit_date: str | None = None
         self._failure_count = 0
         self._trading_disabled_until = 0.0
+        self._calibration_halted_until = 0.0
         self._market_sync_lock = asyncio.Lock()
         self._engine_cycle_lock = asyncio.Lock()
         self._cycle_lock_owner: str | None = None
@@ -102,11 +103,8 @@ class TradingEngine:
             threshold=getattr(TUNING, "calibration_brier_threshold", 0.25),
         )
         persist_snapshot(result)
-        if result["status"] == "halted" or is_trading_halted(
-            threshold=getattr(TUNING, "calibration_brier_threshold", 0.25),
-            window_size=getattr(TUNING, "calibration_window_size", 50),
-        ):
-            self._trading_disabled_until = time.time() + getattr(TUNING, "calibration_cooldown_sec", 300)
+        if result["status"] == "halted":
+            self._calibration_halted_until = time.time() + getattr(TUNING, "calibration_cooldown_sec", 300)
             logger.warning(
                 "calibration_halt brier=%.4f threshold=%.4f trades=%d cooldown_sec=%d",
                 result["brier_score"],
@@ -115,9 +113,12 @@ class TradingEngine:
                 getattr(TUNING, "calibration_cooldown_sec", 300),
             )
         else:
-            if self._trading_disabled_until > time.time():
-                logger.info("calibration_recovered brier=%.4f trading_resumed", result["brier_score"])
-            self._trading_disabled_until = 0.0
+            if self._calibration_halted_until > time.time():
+                logger.info(
+                    "calibration_recovered brier=%.4f trading_resumed",
+                    result["brier_score"],
+                )
+            self._calibration_halted_until = 0.0
 
     async def stop(self) -> None:
         for task in self._tasks:
@@ -216,6 +217,8 @@ class TradingEngine:
             await self.breakers.market_fetch_breaker.record_success()
             if api_round_trip_ok or len(markets) > 0:
                 self._failure_count = 0
+                if self._trading_disabled_until > time.time():
+                    logger.info("circuit_breaker_reset_by_sync")
                 self._trading_disabled_until = 0.0
             if self.mode == EngineMode.BOOT:
                 self.mode = EngineMode.LIVE
@@ -271,16 +274,27 @@ class TradingEngine:
             object.__setattr__(TUNING, "max_settlement_window_hours", 168)
         if hasattr(TUNING, "auto_execute"):
             object.__setattr__(TUNING, "auto_execute", True)
+        # Circuit breaker check (from _guarded failures)
         if self._trading_disabled_until > time.time():
-            logger.warning("circuit_breaker_blocked remaining_sec=%d", int(self._trading_disabled_until - time.time()))
+            logger.warning(
+                "circuit_breaker_blocked remaining_sec=%d",
+                int(self._trading_disabled_until - time.time()),
+            )
             return
-        if self._trading_disabled_until > time.time():
-            logger.warning("cycle_skipped reason=calibration_halt remaining_sec=%d", int(self._trading_disabled_until - time.time()))
-            return
+
+        # Auto-close circuit breaker if expired
         if self._trading_disabled_until and self._trading_disabled_until <= time.time():
             logger.info("circuit_breaker_closed")
             self._trading_disabled_until = 0.0
             self._failure_count = 0
+
+        # Calibration halt check (separate from circuit breaker)
+        if self._calibration_halted_until > time.time():
+            logger.warning(
+                "cycle_skipped reason=calibration_halt remaining_sec=%d",
+                int(self._calibration_halted_until - time.time()),
+            )
+            return
         if not self._initial_sync_complete.is_set():
             logger.info("run_cycle_skipped reason=awaiting_initial_sync")
             return
@@ -750,5 +764,7 @@ class TradingEngine:
                     "auth_ok": self.state.auth_ok,
                     "auto_execute": TUNING.auto_execute,
                     "allow_combos": TUNING.allow_combos,
+                    "calibration_halted_until": self._calibration_halted_until,
+                    "calibration_halted_remaining_sec": int(max(0, self._calibration_halted_until - time.time())),
                 },
             }

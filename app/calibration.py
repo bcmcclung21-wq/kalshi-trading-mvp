@@ -12,15 +12,16 @@ from app.models import CalibrationSnapshot, OrderRecord
 
 logger = logging.getLogger(__name__)
 
+MIN_VALID_TRADES_FOR_HALT = 10
+
 
 def compute_brier(window_size: int = 50, threshold: float = 0.25) -> dict[str, Any]:
-    """Winning with bad calibration = luck. Losing with good calibration = variance.
-    Only the Brier Score tells the difference. Stop trading the moment calibration breaks."""
     with SessionLocal() as db:
         orders = db.execute(
             select(OrderRecord)
             .where(OrderRecord.status.in_(["won", "lost", "settled"]))
-            .where(OrderRecord.calibration_status == "ok")
+            .where(OrderRecord.estimated_win_probability > 0.0)
+            .where(OrderRecord.estimated_win_probability.isnot(None))
             .order_by(desc(OrderRecord.settled_at))
             .limit(window_size)
         ).scalars().all()
@@ -29,9 +30,15 @@ def compute_brier(window_size: int = 50, threshold: float = 0.25) -> dict[str, A
         return {
             "brier_score": 0.0,
             "trades_evaluated": 0,
+            "valid_trades": 0,
             "status": "ok",
             "bucket_breakdown": {},
-            "raw": {"note": "no settled trades", "threshold": threshold, "window_size": window_size},
+            "raw": {
+                "note": "no settled trades with valid probabilities",
+                "threshold": threshold,
+                "window_size": window_size,
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            },
         }
 
     brier_sum = 0.0
@@ -44,7 +51,7 @@ def compute_brier(window_size: int = 50, threshold: float = 0.25) -> dict[str, A
     }
 
     for order in orders:
-        p = float(order.estimated_win_probability or 0.0)
+        p = float(order.estimated_win_probability)
         p = max(0.0, min(1.0, p))
         won = order.status == "won"
         o = 1.0 if won else 0.0
@@ -78,16 +85,25 @@ def compute_brier(window_size: int = 50, threshold: float = 0.25) -> dict[str, A
             buckets[key]["avg_brier"] = None
             buckets[key]["actual_rate"] = None
 
-    status = "ok" if brier <= threshold else "halted"
+    if n < MIN_VALID_TRADES_FOR_HALT:
+        status = "ok"
+        logger.info(
+            "calibration_insufficient_data valid_trades=%d min_required=%d brier=%.4f - not halting",
+            n, MIN_VALID_TRADES_FOR_HALT, brier,
+        )
+    else:
+        status = "ok" if brier <= threshold else "halted"
 
     return {
         "brier_score": round(brier, 4),
         "trades_evaluated": n,
+        "valid_trades": n,
         "status": status,
         "bucket_breakdown": buckets,
         "raw": {
             "threshold": threshold,
             "window_size": window_size,
+            "min_valid_trades": MIN_VALID_TRADES_FOR_HALT,
             "computed_at": datetime.now(timezone.utc).isoformat(),
         },
     }
@@ -108,13 +124,18 @@ def persist_snapshot(result: dict[str, Any]) -> CalibrationSnapshot:
         db.add(snap)
         db.commit()
         db.refresh(snap)
-    logger.info("calibration_snapshot brier=%.4f status=%s trades=%d", snap.brier_score, snap.status, snap.trades_evaluated)
+    logger.info(
+        "calibration_snapshot brier=%.4f status=%s trades=%d",
+        snap.brier_score, snap.status, snap.trades_evaluated,
+    )
     return snap
 
 
 def latest_snapshot() -> CalibrationSnapshot | None:
     with SessionLocal() as db:
-        return db.execute(select(CalibrationSnapshot).order_by(desc(CalibrationSnapshot.computed_at)).limit(1)).scalar_one_or_none()
+        return db.execute(
+            select(CalibrationSnapshot).order_by(desc(CalibrationSnapshot.computed_at)).limit(1)
+        ).scalar_one_or_none()
 
 
 def is_trading_halted(threshold: float = 0.25, window_size: int = 50) -> bool:
