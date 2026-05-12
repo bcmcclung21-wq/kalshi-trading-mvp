@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 MARKET_TZ = ZoneInfo(TUNING.market_timezone)
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_LADDER_ROOT_RE = re.compile(r"^(tc-temp-[a-z0-9-]+high-\d{4}-\d{2}-\d{2})-", re.IGNORECASE)
 
 
 def _extract_market_date(market: dict[str, Any]) -> date | None:
@@ -267,7 +268,20 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
     return None
 
 
-def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], all_markets: list[dict[str, Any]] | None = None, manual_note: dict[str, Any] | None = None) -> tuple[Candidate | None, str | None]:
+def _family_key(market: dict[str, Any]) -> str:
+    ticker = str(market.get("ticker") or "").lower()
+    event = str(market.get("event_ticker") or "").lower()
+    mt = _LADDER_ROOT_RE.match(ticker)
+    return mt.group(1) if mt else event
+
+
+def build_candidate(
+    market: dict[str, Any],
+    orderbook: dict[str, Any],
+    all_markets: list[dict[str, Any]] | None = None,
+    sibling_markets: list[dict[str, Any]] | None = None,
+    manual_note: dict[str, Any] | None = None,
+) -> tuple[Candidate | None, str | None]:
     market = normalized_market(market)
     if not market:
         return None, "invalid_market"
@@ -279,16 +293,23 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], all_marke
     if quote is None:
         return None, "invalid_orderbook"
     side, entry_price, spread_cents = quote
+    yes_bid = best_bid(list(orderbook.get("yes_bids") or orderbook.get("yes") or []))
+    yes_ask = best_ask(list(orderbook.get("yes_asks") or []))
+    no_bid = best_bid(list(orderbook.get("no_bids") or orderbook.get("no") or []))
+    no_ask = best_ask(list(orderbook.get("no_asks") or []))
+    market["yes_bid"] = yes_bid
+    market["yes_ask"] = yes_ask
+    market["no_bid"] = no_bid
+    market["no_ask"] = no_ask
     if spread_cents > TUNING.max_spread_cents:
         return None, "bad_spread"
     if entry_price <= 0 or entry_price >= 0.95:
         return None, "bad_price"
 
-    sibling_markets = []
-    if all_markets:
+    candidate_siblings = sibling_markets or []
+    if not candidate_siblings and all_markets:
         ladders = group_ladder_markets(all_markets)
-        key = str(market.get("event_ticker") or "")
-        sibling_markets = ladders.get(key, [])
+        candidate_siblings = ladders.get(_family_key(market), [])
     envelope = build_research_envelope(
         market=market,
         entry_price=entry_price,
@@ -296,7 +317,7 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], all_marke
         volume=float(market.get("volume") or 0.0),
         oi=float(market.get("open_interest") or 0.0),
         side=side,
-        sibling_markets=sibling_markets,
+        sibling_markets=candidate_siblings,
         manual_note=manual_note,
     )
     total_score = (
@@ -307,6 +328,18 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], all_marke
         + envelope.ev_bonus
     )
     threshold = TUNING.min_total_score_combo if market["market_type"] == "combo" else TUNING.min_total_score_single
+    logger.info(
+        "candidate_model ticker=%s family=%s siblings=%d model=%s fair=%.4f edge=%.4f projection=%.2f confidence=%.2f total=%.2f",
+        market.get("ticker"),
+        _family_key(market),
+        len(candidate_siblings),
+        envelope.projection_model,
+        float(envelope.fair_probability),
+        float(envelope.edge),
+        envelope.projection_score,
+        envelope.confidence_score,
+        round(total_score, 2),
+    )
     if not envelope.projection_supported:
         return None, "unsupported_projection_model"
     min_edge_bps = TUNING.min_edge_bps

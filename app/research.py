@@ -160,6 +160,27 @@ def build_research_envelope(
             projection_model = "ladder_range"
 
     if not projection_supported:
+        yes_bid = float(market.get("yes_bid") or 0.0)
+        yes_ask = float(market.get("yes_ask") or 0.0)
+        no_bid = float(market.get("no_bid") or 0.0)
+        no_ask = float(market.get("no_ask") or 0.0)
+        if yes_ask <= 0 and no_bid > 0:
+            yes_ask = max(0.01, min(0.99, 1.0 - no_bid))
+        if no_ask <= 0 and yes_bid > 0:
+            no_ask = max(0.01, min(0.99, 1.0 - yes_bid))
+
+        has_yes_pair = yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid
+        spread_ok = spread_cents <= 6.0
+        near_term_ok = (minutes_to_close is not None) and (20.0 <= float(minutes_to_close) <= (36.0 * 60.0))
+        if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0:
+            midpoint = max(0.01, min(0.99, (yes_bid + yes_ask) / 2.0))
+            fair_probability, edge = compute_side_edge(side, entry_price, midpoint)
+            ladder_consistency = 0.5
+            projection_supported = True
+            projection_model = "binary_quote_fallback"
+            tags.append("fallback_binary_quote")
+
+    if not projection_supported:
         return ResearchEnvelope(
             projection_score=0.0,
             research_score=liq_q,
