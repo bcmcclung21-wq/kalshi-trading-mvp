@@ -6,6 +6,7 @@ import re
 
 from app.classifier import detect_category
 from app.learning import bucket_features, get_learning_engine
+from app.projection_registry import project as project_market
 
 
 @dataclass(slots=True)
@@ -179,6 +180,16 @@ def build_research_envelope(
             projection_supported = True
             projection_model = "binary_quote_fallback"
             tags.append("fallback_binary_quote")
+
+    if not projection_supported:
+        ticker = str(market.get("ticker") or "")
+        if ticker.startswith("tc-temp-"):
+            pr = project_market(ticker, market, {})
+            fair_probability, edge = compute_side_edge(side, entry_price, pr.fair_value)
+            projection_supported = True
+            projection_model = pr.metadata.get("source", "temperature_registry")
+            ladder_consistency = max(0.0, min(1.0, pr.confidence))
+            tags.append("temperature_registry")
 
     if not projection_supported:
         return ResearchEnvelope(
