@@ -90,8 +90,12 @@ def profile_liquidity(ticker: str, orderbook: dict[str, Any], state: RollingMark
     no_ask = min([p for p, _ in no_asks], default=0.0)
     if yes_ask <= 0 and no_bid > 0:
         yes_ask = 1 - no_bid
+    if yes_bid <= 0 and no_ask > 0:
+        yes_bid = 1 - no_ask
     if no_ask <= 0 and yes_bid > 0:
         no_ask = 1 - yes_bid
+    if no_bid <= 0 and yes_ask > 0:
+        no_bid = 1 - yes_ask
     midpoint = mean([x for x in [yes_bid, yes_ask] if x > 0]) if (yes_bid > 0 or yes_ask > 0) else 0.5
     spread = max(0.0, yes_ask - yes_bid) if yes_ask and yes_bid else 1.0
     all_levels = yes_bids + yes_asks + [(1 - p, q) for p, q in no_bids if 0 < p < 1] + [(1 - p, q) for p, q in no_asks if 0 < p < 1]

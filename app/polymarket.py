@@ -184,12 +184,17 @@ class PolymarketClient:
         no_bids = _norm(no_bids_raw)
         no_asks = _norm(no_asks_raw)
 
-        if (yes_bids or yes_asks) and not (no_bids or no_asks):
-            no_bids = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in yes_asks]
-            no_asks = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in yes_bids]
-        if (no_bids or no_asks) and not (yes_bids or yes_asks):
-            yes_bids = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in no_asks]
-            yes_asks = [{"price": round(max(0.01, min(0.99, 1.0 - l["price"])), 6), "qty": l["qty"]} for l in no_bids]
+        def complement(levels: list[dict[str, float]]) -> list[dict[str, float]]:
+            return [{"price": round(max(0.01, min(0.99, 1.0 - lvl["price"])), 6), "qty": lvl["qty"]} for lvl in levels]
+
+        if not yes_asks and no_bids:
+            yes_asks = complement(no_bids)
+        if not yes_bids and no_asks:
+            yes_bids = complement(no_asks)
+        if not no_asks and yes_bids:
+            no_asks = complement(yes_bids)
+        if not no_bids and yes_asks:
+            no_bids = complement(yes_asks)
 
         yes_bids = sorted(yes_bids, key=lambda x: x["price"], reverse=True)
         yes_asks = sorted(yes_asks, key=lambda x: x["price"])
