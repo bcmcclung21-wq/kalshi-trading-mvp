@@ -66,12 +66,17 @@ _ORDER_RECORDS_REPAIRS = [
     ("settled_at", "TIMESTAMP WITH TIME ZONE"),
     ("features_json", "TEXT DEFAULT '{}'"),
     ("estimated_win_probability", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("brier_snapshot_json", "TEXT DEFAULT '{}'"),
+    ("calibration_status", "TEXT DEFAULT 'ok'"),
 ]
 
 _AUDIT_RUNS_REPAIRS = [
     ("feature_breakdown_json", "TEXT DEFAULT '{}'"),
     ("calibration_json", "TEXT DEFAULT '{}'"),
     ("learning_summary_json", "TEXT DEFAULT '{}'"),
+    ("rolling_brier", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("brier_threshold", "DOUBLE PRECISION DEFAULT 0.25"),
+    ("trades_in_window", "INTEGER DEFAULT 0"),
 ]
 
 

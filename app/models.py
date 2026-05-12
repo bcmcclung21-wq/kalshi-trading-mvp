@@ -110,6 +110,8 @@ class OrderRecord(Base):
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     features_json: Mapped[str] = mapped_column(Text, default="{}")
     estimated_win_probability: Mapped[float] = mapped_column(Float, default=0.0)
+    brier_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    calibration_status: Mapped[str] = mapped_column(String(16), default="ok")
 
 
 class PositionSnapshot(Base):
@@ -143,6 +145,9 @@ class AuditRun(Base):
     feature_breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
     calibration_json: Mapped[str] = mapped_column(Text, default="{}")
     learning_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    rolling_brier: Mapped[float] = mapped_column(Float, default=0.0)
+    brier_threshold: Mapped[float] = mapped_column(Float, default=0.25)
+    trades_in_window: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class MarketMicrostructureState(Base):
@@ -160,6 +165,20 @@ class MarketMicrostructureState(Base):
     volatility_score: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String(16), default="inactive", index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class CalibrationSnapshot(Base):
+    __tablename__ = "calibration_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    window_size: Mapped[int] = mapped_column(Integer, default=50)
+    brier_score: Mapped[float] = mapped_column(Float, default=0.0)
+    trades_evaluated: Mapped[int] = mapped_column(Integer, default=0)
+    threshold: Mapped[float] = mapped_column(Float, default=0.25)
+    status: Mapped[str] = mapped_column(String(16), default="ok")
+    bucket_breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
 class LearnedPrior(Base):
