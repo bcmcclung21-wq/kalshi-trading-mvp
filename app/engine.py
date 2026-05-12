@@ -426,19 +426,34 @@ class TradingEngine:
                     rejected += 1
                     continue
                 is_valid, validation_reason = validate_market_candidate(market, book)
+                # Compute effective prices for logging (same logic as selector).
                 yes_bid_px = best_bid(list(book.get("yes_bids") or book.get("yes") or []))
                 yes_ask_px = best_ask(list(book.get("yes_asks") or []))
                 no_bid_px = best_bid(list(book.get("no_bids") or book.get("no") or []))
                 no_ask_px = best_ask(list(book.get("no_asks") or []))
-                if yes_ask_px <= 0 and no_bid_px > 0:
-                    yes_ask_px = 1 - no_bid_px
-                if yes_bid_px <= 0 and no_ask_px > 0:
-                    yes_bid_px = 1 - no_ask_px
-                if no_ask_px <= 0 and yes_bid_px > 0:
-                    no_ask_px = 1 - yes_bid_px
-                if no_bid_px <= 0 and yes_ask_px > 0:
-                    no_bid_px = 1 - yes_ask_px
-                spread = (yes_ask_px - yes_bid_px) if yes_ask_px > 0 and yes_bid_px > 0 else 0.0
+
+                # Complement reconstruction for accurate spread logging.
+                if yes_ask_px <= 0.0 and no_bid_px > 0.0:
+                    yes_ask_px = 1.0 - no_bid_px
+                if yes_bid_px <= 0.0 and no_ask_px > 0.0:
+                    yes_bid_px = 1.0 - no_ask_px
+                if no_ask_px <= 0.0 and yes_bid_px > 0.0:
+                    no_ask_px = 1.0 - yes_bid_px
+                if no_bid_px <= 0.0 and yes_ask_px > 0.0:
+                    no_bid_px = 1.0 - yes_ask_px
+
+                yes_bid_px = max(0.0, min(0.99, yes_bid_px))
+                yes_ask_px = max(0.0, min(0.99, yes_ask_px))
+                no_bid_px = max(0.0, min(0.99, no_bid_px))
+                no_ask_px = max(0.0, min(0.99, no_ask_px))
+
+                # Use effective prices for spread, not native prices.
+                if yes_ask_px > 0.0 and yes_bid_px >= 0.0 and yes_ask_px >= yes_bid_px:
+                    spread = (yes_ask_px - yes_bid_px) * 100.0
+                elif no_ask_px > 0.0 and no_bid_px >= 0.0 and no_ask_px >= no_bid_px:
+                    spread = (no_ask_px - no_bid_px) * 100.0
+                else:
+                    spread = 999.0  # Inverted or non-executable.
                 logger.info(
                     "candidate_book ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f spread=%.4f validation=%s",
                     market.get("ticker"), yes_bid_px, yes_ask_px, no_bid_px, no_ask_px, spread, validation_reason if not is_valid else "precheck_ok"
