@@ -211,6 +211,11 @@ def _dashboard_payload() -> dict:
         "audits": audits,
         "latest_audit": latest_audit,
         "latest_calibration": latest_calibration,
+        "calibration_status": {
+            "halted": app.state.engine._calibration_halted_until > time.time(),
+            "halted_until": app.state.engine._calibration_halted_until,
+            "halted_remaining_sec": int(max(0, app.state.engine._calibration_halted_until - time.time())),
+        },
         "research_notes": notes,
         "categories": CATEGORIES,
         "bankroll_rules": BANKROLL_RULES,

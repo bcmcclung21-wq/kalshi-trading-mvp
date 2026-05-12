@@ -20,31 +20,39 @@
 
     <section class="metrics" id="kpis"></section>
 
-    <div class="panel calibration-panel">
-      <h2>Calibration (Brier Score)</h2>
-      {% if dashboard.latest_calibration %}
-        <p>Status: <strong class="status-{{ dashboard.latest_calibration.status }}">{{ dashboard.latest_calibration.status.upper() }}</strong></p>
-        <p>Brier: <strong>{{ "%.4f" | format(dashboard.latest_calibration.brier_score) }}</strong> / threshold {{ "%.2f" | format(dashboard.latest_calibration.threshold) }}</p>
-        <p>Trades in window: {{ dashboard.latest_calibration.trades_evaluated }} / {{ dashboard.runtime.calibration_window_size }}</p>
-        <p>Computed: {{ dashboard.latest_calibration.computed_at }}</p>
-        {% if dashboard.latest_calibration.buckets %}
-          <table>
-            <tr><th>Bucket</th><th>N</th><th>Wins</th><th>Actual Rate</th><th>Avg Brier</th></tr>
-            {% for bucket, data in dashboard.latest_calibration.buckets.items() %}
-            <tr>
-              <td>{{ bucket }}</td>
-              <td>{{ data.n }}</td>
-              <td>{{ data.wins }}</td>
-              <td>{{ "%.3f" | format(data.actual_rate) if data.actual_rate is not none else "—" }}</td>
-              <td>{{ "%.4f" | format(data.avg_brier) if data.avg_brier is not none else "—" }}</td>
-            </tr>
-            {% endfor %}
-          </table>
-        {% endif %}
-      {% else %}
-        <p>No calibration data yet. Settled trades will appear here.</p>
-      {% endif %}
-    </div>
+<div class="panel calibration-panel">
+  <h2>Calibration (Brier Score)</h2>
+  {% if dashboard.latest_calibration %}
+    <p>Status: <strong class="status-{{ dashboard.latest_calibration.status }}">{{ dashboard.latest_calibration.status.upper() }}</strong></p>
+    <p>Brier: <strong>{{ "%.4f" | format(dashboard.latest_calibration.brier_score) }}</strong> / threshold {{ "%.2f" | format(dashboard.latest_calibration.threshold) }}</p>
+    <p>Valid trades in window: {{ dashboard.latest_calibration.trades_evaluated }} / {{ dashboard.runtime.calibration_window_size }}</p>
+    <p>Min required for halt: 10</p>
+    <p>Computed: {{ dashboard.latest_calibration.computed_at }}</p>
+
+    {% if dashboard.calibration_status.halted %}
+      <p class="status-halted">Trading HALTED by calibration for {{ dashboard.calibration_status.halted_remaining_sec }}s</p>
+    {% else %}
+      <p class="status-ok">Trading allowed - calibration OK</p>
+    {% endif %}
+
+    {% if dashboard.latest_calibration.buckets %}
+      <table>
+        <tr><th>Bucket</th><th>N</th><th>Wins</th><th>Actual Rate</th><th>Avg Brier</th></tr>
+        {% for bucket, data in dashboard.latest_calibration.buckets.items() %}
+        <tr>
+          <td>{{ bucket }}</td>
+          <td>{{ data.n }}</td>
+          <td>{{ data.wins }}</td>
+          <td>{{ "%.3f" | format(data.actual_rate) if data.actual_rate is not none else "-" }}</td>
+          <td>{{ "%.4f" | format(data.avg_brier) if data.avg_brier is not none else "-" }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    {% endif %}
+  {% else %}
+    <p>No calibration data yet. Settled trades with estimated_win_probability > 0 will appear here.</p>
+  {% endif %}
+</div>
 
     <section class="grid-2">
       <article class="card">
