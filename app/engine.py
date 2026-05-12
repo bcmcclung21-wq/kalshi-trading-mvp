@@ -17,6 +17,7 @@ from app.state import EngineState
 from app.models import AuditRun, CandidateRun, OrderBookSnapshot, OrderRecord, PositionSnapshot, ResearchNote
 from app.risk import category_exposure_ok, duplicate_ticker_ok
 from app.selector import best_ask, best_bid, build_candidate, combo_pool, diversified_pool, normalize_markets, rank_candidates, single_pool, validate_market_candidate
+from app.research import group_ladder_markets
 from app.services.audit import summarize_settlements
 from app.services.execution import execute_candidate
 from app.services.universe import persist_markets
@@ -362,6 +363,7 @@ class TradingEngine:
             logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.liquidity.market_state), len(self.liquidity.active_liquid_markets), len(self.liquidity.inactive_markets), len(self.liquidity.stale_markets))
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
         logger.info("pool_after_diversify count=%d", len(pool))
+        ladder_groups = group_ladder_markets(pool)
 
         t_books = time.perf_counter()
         orderbooks = [batch_books.get(str(m.get("ticker") or ""), {}) for m in pool]
@@ -392,7 +394,20 @@ class TradingEngine:
                     rejected += 1
                     continue
                 manual_note = note_map.get(market["ticker"]) or note_map.get(f"category:{market['category']}")
-                candidate, reason = build_candidate(market, book, all_markets=pool, manual_note=manual_note)
+                family_key = str(market.get("event_ticker") or "").lower()
+                ticker_lower = str(market.get("ticker") or "").lower()
+                for key in ladder_groups.keys():
+                    if ticker_lower.startswith(key):
+                        family_key = key
+                        break
+                siblings = ladder_groups.get(family_key, [])
+                candidate, reason = build_candidate(
+                    market,
+                    book,
+                    all_markets=pool,
+                    sibling_markets=siblings,
+                    manual_note=manual_note,
+                )
                 if not candidate:
                     logger.info("candidate_rejected ticker=%s side=%s entry=%.4f fair=%.4f edge=%.4f projection=%.2f confidence=%.2f total=%.2f spread=%.2f reason=%s", market.get("ticker"), "NA", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, spread, reason or "unknown")
                     rejected += 1

@@ -18,14 +18,14 @@ def test_single_pool_keeps_clean_single():
     assert sum(rejects.values()) == 1
 
 
-def test_build_candidate_rejects_unsupported_projection_model():
+def test_build_candidate_uses_fallback_projection_model_when_siblings_missing():
     market = normalize_markets([
         {"ticker": "ABC", "title": "Will Team A win the game?", "volume": 300, "open_interest": 120, "close_time": _near_term_close_iso(), "minutes_to_close": 120}
     ])[0]
     orderbook = {"yes": [{"price": 0.47}, {"price": 0.49}], "no": [{"price": 0.46}, {"price": 0.50}]}
     candidate, reason = build_candidate(market, orderbook)
     assert candidate is None
-    assert reason == "unsupported_projection_model"
+    assert reason != "unsupported_projection_model"
 
 
 def test_has_valid_orderbook_accepts_yes_and_no_sides():
