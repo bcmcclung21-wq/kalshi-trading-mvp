@@ -20,6 +20,17 @@ class Settings(BaseSettings):
 
     auto_execute: bool = False
     allow_combos: bool = False
+    max_orders_per_cycle: int = 5
+    sports_same_day_only: bool = True
+
+    cashout_enabled: bool = True
+    cashout_stop_loss_pct: float = -15.0
+    cashout_tp1_pct: float = 25.0
+    cashout_tp1_size_pct: float = 40.0
+    cashout_tp2_pct: float = 50.0
+    cashout_tp2_size_pct: float = 30.0
+    cashout_tp3_pct: float = 100.0
+    cashout_tp3_size_pct: float = 30.0
 
 
 settings = Settings()

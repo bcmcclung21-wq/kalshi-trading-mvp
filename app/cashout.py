@@ -15,6 +15,7 @@ class CashoutManager:
     def __init__(self, poly_client) -> None:
         self.poly = poly_client
         self._last_cashout: dict[str, datetime] = {}
+        self._breakeven_enabled: set[str] = set()
 
     async def evaluate_positions(self) -> None:
         if not TUNING.cashout_enabled:
@@ -57,7 +58,8 @@ class CashoutManager:
                     unrealized_pct = ((no_bid - entry) / entry) * 100.0
                 trigger = None
                 size = 0.0
-                if unrealized_pct <= TUNING.cashout_stop_loss_pct:
+                stop_loss_pct = 0.0 if ticker in self._breakeven_enabled else TUNING.cashout_stop_loss_pct
+                if unrealized_pct <= stop_loss_pct:
                     trigger = "stop_loss"; size = qty
                 elif unrealized_pct >= TUNING.cashout_tp3_pct:
                     trigger = "take_profit_3"; size = qty * (TUNING.cashout_tp3_size_pct / 100.0)
@@ -65,6 +67,7 @@ class CashoutManager:
                     trigger = "take_profit_2"; size = qty * (TUNING.cashout_tp2_size_pct / 100.0)
                 elif unrealized_pct >= TUNING.cashout_tp1_pct:
                     trigger = "take_profit_1"; size = qty * (TUNING.cashout_tp1_size_pct / 100.0)
+                    self._breakeven_enabled.add(ticker)
                 if not trigger or size <= 0:
                     continue
                 self._last_cashout[ticker] = now
