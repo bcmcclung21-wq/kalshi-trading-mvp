@@ -3,6 +3,9 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
+from app.cashout import CashoutManager
+from app.strategy import TUNING
+
 logger = logging.getLogger("app.engine")
 
 BANKROLL_PCT = {
@@ -42,7 +45,9 @@ class TradingEngine:
         self.min_confidence = 60.0
         self.min_projection = 50.0
         self.max_spread = 0.05        # 5 cents max spread
-        self.max_category_exposure = 0.30  # 30% max per category
+        self.max_category_exposure = TUNING.max_category_exposure_pct
+        self.max_orders_per_cycle = TUNING.max_orders_per_cycle
+        self.cashout = CashoutManager(api)
 
     def _calculate_fair(self, book: CandidateBook) -> float:
         """Midpoint fair value with spread penalty."""
@@ -204,9 +209,11 @@ class TradingEngine:
         # Sort by total score
         candidates.sort(key=lambda x: x[0].total, reverse=True)
 
+        await self.cashout.evaluate_positions()
+
         # Execute top N (respecting AUTO_EXECUTE)
         orders_placed = []
-        for model, book in candidates[:5]:  # Max 5 per cycle
+        for model, book in candidates[:self.max_orders_per_cycle]:
             size = self._get_position_size(book.legs, bankroll)
             price = book.yes_ask if model.side == "yes" else book.no_ask
 

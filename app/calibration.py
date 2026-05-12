@@ -20,6 +20,7 @@ def compute_brier(window_size: int = 50, threshold: float = 0.25) -> dict[str, A
         orders = db.execute(
             select(OrderRecord)
             .where(OrderRecord.status.in_(["won", "lost", "settled"]))
+            .where(OrderRecord.calibration_status == "ok")
             .where(OrderRecord.estimated_win_probability > 0.0)
             .where(OrderRecord.estimated_win_probability.isnot(None))
             .order_by(desc(OrderRecord.settled_at))

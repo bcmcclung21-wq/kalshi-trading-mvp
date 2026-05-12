@@ -174,7 +174,10 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
             continue
-        if cat != "sports" and minutes > max_minutes:
+        if cat == "sports":
+            # Sports are strictly same-day; bypass generic max-days/too-far window.
+            pass
+        elif minutes > max_minutes:
             rejects["too_far_to_close"] += 1
             continue
 
@@ -194,6 +197,10 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
 
         out.append(market)
 
+    sports_kept = sum(1 for m in out if str(m.get("category") or "").lower() == "sports")
+    climate_kept = sum(1 for m in out if str(m.get("category") or "").lower() == "climate")
+    politics_kept = sum(1 for m in out if str(m.get("category") or "").lower() == "politics")
+    logger.info("pool_category_breakdown sports_kept=%d climate_kept=%d politics_kept=%d", sports_kept, climate_kept, politics_kept)
     return out, rejects
 
 
@@ -434,11 +441,13 @@ def build_candidate(
         if spread_cents > 5.0:
             return None, "sports_spread_too_wide"
         envelope.fair_probability = mid
-        envelope.edge = abs(float(envelope.fair_probability) - float(entry_price))
+        envelope.edge = max(0.0, abs(float(envelope.fair_probability) - float(entry_price)))
+        envelope.projection_model = "SportsFairValue"
     elif category == "politics":
         implied = (yes_ask_eff + yes_bid_eff) / 2.0 if yes_ask_eff > 0 and yes_bid_eff >= 0 else entry_price
         envelope.fair_probability = implied
-        envelope.edge = abs(float(envelope.fair_probability) - float(entry_price))
+        envelope.edge = max(0.0, abs(float(envelope.fair_probability) - float(entry_price)))
+        envelope.projection_model = "MarketImplied"
         if envelope.confidence_score < 60:
             return None, "low_confidence"
         if envelope.edge < 0.03:
