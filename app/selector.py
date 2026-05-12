@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 from app.classifier import normalized_market, is_packaged_market
-from app.research import build_research_envelope
+from app.research import build_research_envelope, group_ladder_markets
 from app.strategy import SPORTS, TUNING
 
 logger = logging.getLogger(__name__)
@@ -267,7 +267,7 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
     return None
 
 
-def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_note: dict[str, Any] | None = None) -> tuple[Candidate | None, str | None]:
+def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], all_markets: list[dict[str, Any]] | None = None, manual_note: dict[str, Any] | None = None) -> tuple[Candidate | None, str | None]:
     market = normalized_market(market)
     if not market:
         return None, "invalid_market"
@@ -284,12 +284,19 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
     if entry_price <= 0 or entry_price >= 0.95:
         return None, "bad_price"
 
+    sibling_markets = []
+    if all_markets:
+        ladders = group_ladder_markets(all_markets)
+        key = str(market.get("event_ticker") or "")
+        sibling_markets = ladders.get(key, [])
     envelope = build_research_envelope(
         market=market,
         entry_price=entry_price,
         spread_cents=spread_cents,
         volume=float(market.get("volume") or 0.0),
         oi=float(market.get("open_interest") or 0.0),
+        side=side,
+        sibling_markets=sibling_markets,
         manual_note=manual_note,
     )
     total_score = (
@@ -300,6 +307,16 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
         + envelope.ev_bonus
     )
     threshold = TUNING.min_total_score_combo if market["market_type"] == "combo" else TUNING.min_total_score_single
+    if not envelope.projection_supported:
+        return None, "unsupported_projection_model"
+    min_edge_bps = TUNING.min_edge_bps
+    fair_gap = abs(float(envelope.fair_probability) - float(entry_price))
+    if (entry_price <= TUNING.extreme_price_min or entry_price >= TUNING.extreme_price_max) and (float(envelope.edge) * 10000.0 < min_edge_bps):
+        return None, "extreme_price_without_edge"
+    if float(envelope.edge) * 10000.0 < min_edge_bps:
+        return None, "low_edge"
+    if fair_gap < TUNING.min_fair_prob_gap:
+        return None, "low_fair_prob_gap"
     if envelope.projection_score < TUNING.min_projection_score:
         return None, "failed_projection"
     if envelope.confidence_score < TUNING.min_confidence_score:
@@ -331,6 +348,9 @@ def build_candidate(market: dict[str, Any], orderbook: dict[str, Any], manual_no
             "expected_value": getattr(envelope, "expected_value", 0.0),
             "learning_multiplier": getattr(envelope, "learning_multiplier", 1.0),
             "learning_components": getattr(envelope, "learning_components", {}) or {},
+            "fair_probability": getattr(envelope, "fair_probability", 0.0),
+            "edge": getattr(envelope, "edge", 0.0),
+            "projection_model": getattr(envelope, "projection_model", "unknown"),
         },
     ), None
 

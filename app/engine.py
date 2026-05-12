@@ -392,9 +392,9 @@ class TradingEngine:
                     rejected += 1
                     continue
                 manual_note = note_map.get(market["ticker"]) or note_map.get(f"category:{market['category']}")
-                candidate, reason = build_candidate(market, book, manual_note=manual_note)
+                candidate, reason = build_candidate(market, book, all_markets=pool, manual_note=manual_note)
                 if not candidate:
-                    logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), reason or "unknown")
+                    logger.info("candidate_rejected ticker=%s side=%s entry=%.4f fair=%.4f edge=%.4f projection=%.2f confidence=%.2f total=%.2f spread=%.2f reason=%s", market.get("ticker"), "NA", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, spread, reason or "unknown")
                     rejected += 1
                     continue
                 if not duplicate_ticker_ok(candidate.ticker, position_rows):
