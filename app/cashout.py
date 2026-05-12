@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import List
 
+from app.strategy import TUNING as settings
+
 logger = logging.getLogger("app.cashout")
 
 
@@ -13,8 +15,6 @@ class CashoutManager:
 
     async def evaluate_positions(self, positions: List[dict]):
         """Evaluate open positions and optionally execute cashouts."""
-        from app.strategy import TUNING as settings
-
         if not getattr(settings, "cashout_enabled", True):
             return
 
