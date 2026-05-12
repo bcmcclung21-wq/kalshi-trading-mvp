@@ -27,6 +27,7 @@ from app.liquidity import LiquidityConfig
 from app.services.resilience import BreakerRegistry
 from app.strategy import TUNING
 from app.calibration import compute_brier, is_trading_halted, persist_snapshot
+from app.cashout import CashoutManager
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class TradingEngine:
         self._last_discovery_refresh = 0.0
         self._last_liquidity_refresh = 0.0
         self._initial_sync_complete = asyncio.Event()
+        self.cashout = CashoutManager(self.poly)
 
     async def start(self) -> None:
         logger.info("engine_instance_started pid=%s instance_id=%s", os.getpid(), self.instance_id)
@@ -313,6 +315,10 @@ class TradingEngine:
             single_rejects["not_same_day_settlement"],
             single_rejects["missing_close_time"],
         )
+
+        from collections import Counter as _Counter
+        kept_by_cat = _Counter(str(m.get("category") or "unknown") for m in pool)
+        logger.info("pool_category_breakdown sports_kept=%d climate_kept=%d politics_kept=%d", kept_by_cat.get("sports",0), kept_by_cat.get("climate",0), kept_by_cat.get("politics",0))
 
         if single_rejects["wrong_category"] > 0:
             unknowns = [m for m in markets if m.get("category") not in {"sports", "politics", "crypto", "climate", "economics"}]
@@ -640,6 +646,7 @@ class TradingEngine:
                 logger.info("reconcile_settled_orders count=%d", updated)
 
         self.state.last_reconcile_at = datetime.now(timezone.utc).isoformat()
+        await self.cashout.evaluate_positions()
         logger.info("reconcile_ok elapsed_s=%.1f positions=%d", time.monotonic() - t0, len(positions))
 
     async def run_daily_audit(self) -> None:

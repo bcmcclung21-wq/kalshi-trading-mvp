@@ -36,7 +36,7 @@ class RuntimeTuning:
     auto_execute: bool = True
     allow_combos: bool = False
     max_combo_legs: int = 4
-    max_orders_per_cycle: int = 3
+    max_orders_per_cycle: int = 5
     check_interval_sec: int = 20
     market_sync_interval_sec: int = 60
     reconcile_interval_sec: int = 60
@@ -57,6 +57,7 @@ class RuntimeTuning:
     # SAME_DAY_ONLY now means "enforce near-term settlement window (no futures)"
     # rather than strict UTC calendar-day equality.
     same_day_only: bool = True
+    sports_same_day_only: bool = True
 
     min_projection_score: float = 35.0
     min_confidence_score: float = 45.0
@@ -66,6 +67,15 @@ class RuntimeTuning:
     extreme_price_min: float = 0.02
     extreme_price_max: float = 0.98
     min_total_score_combo: float = 66.0
+
+    cashout_enabled: bool = True
+    cashout_stop_loss_pct: float = -15.0
+    cashout_tp1_pct: float = 25.0
+    cashout_tp1_size_pct: float = 40.0
+    cashout_tp2_pct: float = 50.0
+    cashout_tp2_size_pct: float = 30.0
+    cashout_tp3_pct: float = 100.0
+    cashout_tp3_size_pct: float = 30.0
 
     max_markets_per_sync: int = 1200
     max_orderbooks_per_cycle: int = 24
@@ -91,7 +101,7 @@ TUNING = RuntimeTuning(
     auto_execute=_env_bool("AUTO_EXECUTE", True),
     allow_combos=_env_bool("ALLOW_COMBOS", False),
     max_combo_legs=_env_int("MAX_COMBO_LEGS", 4),
-    max_orders_per_cycle=_env_int("MAX_ORDERS_PER_CYCLE", 3),
+    max_orders_per_cycle=_env_int("MAX_ORDERS_PER_CYCLE", 5),
     check_interval_sec=_env_int("CHECK_INTERVAL_SEC", 20),
     market_sync_interval_sec=_env_int("MARKET_SYNC_INTERVAL_SEC", 60),
     reconcile_interval_sec=_env_int("RECONCILE_INTERVAL_SEC", 60),
@@ -109,6 +119,15 @@ TUNING = RuntimeTuning(
     market_timezone=os.getenv("MARKET_TIMEZONE", "America/New_York"),
     max_settlement_window_hours=_env_int("MAX_SETTLEMENT_WINDOW_HOURS", 36),
     same_day_only=_env_bool("SAME_DAY_ONLY", True),
+    sports_same_day_only=_env_bool("SPORTS_SAME_DAY_ONLY", True),
+    cashout_enabled=_env_bool("CASHOUT_ENABLED", True),
+    cashout_stop_loss_pct=_env_float("CASHOUT_STOP_LOSS_PCT", -15.0),
+    cashout_tp1_pct=_env_float("CASHOUT_TP1_PCT", 25.0),
+    cashout_tp1_size_pct=_env_float("CASHOUT_TP1_SIZE_PCT", 40.0),
+    cashout_tp2_pct=_env_float("CASHOUT_TP2_PCT", 50.0),
+    cashout_tp2_size_pct=_env_float("CASHOUT_TP2_SIZE_PCT", 30.0),
+    cashout_tp3_pct=_env_float("CASHOUT_TP3_PCT", 100.0),
+    cashout_tp3_size_pct=_env_float("CASHOUT_TP3_SIZE_PCT", 30.0),
     min_projection_score=_env_float("MIN_PROJECTION_SCORE", 35.0),
     min_confidence_score=_env_float("MIN_CONFIDENCE_SCORE", 45.0),
     min_total_score_single=_env_float("MIN_TOTAL_SCORE_SINGLE", 52.0),

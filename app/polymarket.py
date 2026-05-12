@@ -351,6 +351,24 @@ class PolymarketClient:
             log.exception("order_submit_failed ticker=%s", ticker)
             return {"status": "rejected", "error": str(exc), "request": payload}
 
+
+    async def place_sell_order(self, ticker: str, outcome: str, size: int, price: float) -> dict[str, Any]:
+        payload = {
+            "side": "SELL",
+            "outcome": str(outcome).upper(),
+            "size": int(size),
+            "price": float(max(0.01, min(0.99, price))),
+            "ticker": ticker,
+        }
+        if not self.auth_status.ok:
+            return {"status": "dry_run", "request": payload}
+        try:
+            data = await self._request("POST", "/exchange/orders", json=payload)
+            return {"status": "submitted", "order_id": str(data.get("id") or ""), "raw": data}
+        except Exception as exc:
+            log.exception("sell_order_submit_failed ticker=%s", ticker)
+            return {"status": "rejected", "error": str(exc), "request": payload}
+
     async def get_settlements(self) -> list[dict[str, Any]]:
         if not self.auth_status.ok:
             return []

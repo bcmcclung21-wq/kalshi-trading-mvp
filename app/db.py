@@ -70,6 +70,17 @@ _ORDER_RECORDS_REPAIRS = [
     ("calibration_status", "TEXT DEFAULT 'ok'"),
 ]
 
+_CASHOUT_ORDERS_REPAIRS = [
+    ("original_order_id", "INTEGER"),
+    ("ticker", "TEXT"),
+    ("side", "TEXT DEFAULT 'SELL'"),
+    ("cashout_type", "TEXT"),
+    ("size", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("price", "DOUBLE PRECISION DEFAULT 0.0"),
+    ("status", "TEXT DEFAULT 'pending'"),
+    ("created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+]
+
 _AUDIT_RUNS_REPAIRS = [
     ("feature_breakdown_json", "TEXT DEFAULT '{}'"),
     ("calibration_json", "TEXT DEFAULT '{}'"),
@@ -177,6 +188,7 @@ def init_db() -> BootstrapResult:
                 _repair_market_snapshots_schema(conn)
                 _repair_table_schema(conn, "order_records", _ORDER_RECORDS_REPAIRS)
                 _repair_table_schema(conn, "audit_runs", _AUDIT_RUNS_REPAIRS)
+                _repair_table_schema(conn, "cashout_orders", _CASHOUT_ORDERS_REPAIRS)
         except Exception as exc:
             logger.warning("init_db_skipped_but_repair_failed err=%s", exc)
         return BootstrapResult(
@@ -204,6 +216,7 @@ def init_db() -> BootstrapResult:
         _repair_market_snapshots_schema(conn)
         _repair_table_schema(conn, "order_records", _ORDER_RECORDS_REPAIRS)
         _repair_table_schema(conn, "audit_runs", _AUDIT_RUNS_REPAIRS)
+        _repair_table_schema(conn, "cashout_orders", _CASHOUT_ORDERS_REPAIRS)
 
         try:
             conn.execute(text("ALTER TABLE market_snapshots ALTER COLUMN title TYPE TEXT"))

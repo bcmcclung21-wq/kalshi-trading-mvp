@@ -143,7 +143,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
     for market in markets:
         cat = str(market.get("category") or "unknown").lower()
         if cat == "sports":
-            max_hours = 72
+            max_hours = 24
         elif cat == "politics":
             max_hours = 168
         elif cat == "economics":
@@ -174,11 +174,12 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
             continue
-        if minutes > max_minutes:
+        if cat != "sports" and minutes > max_minutes:
             rejects["too_far_to_close"] += 1
             continue
 
-        if TUNING.same_day_only:
+        enforce_same_day = TUNING.same_day_only if cat != "sports" else TUNING.sports_same_day_only
+        if enforce_same_day:
             market_date = _extract_market_date(market)
             if market_date is not None:
                 compare_date = market_date
@@ -422,14 +423,36 @@ def build_candidate(
     )
     if not envelope.projection_supported:
         return None, "unsupported_projection_model"
-    cat_edge = (getattr(TUNING, 'category_edge_bps', None) or {}).get(str(market.get("category") or "unknown").lower(), -1)
+    category = str(market.get("category") or "unknown").lower()
+    if category == "sports":
+        mid = (yes_ask_eff + yes_bid_eff) / 2.0 if yes_ask_eff > 0 and yes_bid_eff >= 0 else entry_price
+        depth_levels = len(orderbook.get("yes_bids") or []) + len(orderbook.get("yes_asks") or [])
+        mins = float(market.get("minutes_to_close") or 120.0)
+        time_boost = max(0.0, min(25.0, (240.0 - mins) / 12.0))
+        depth_boost = max(0.0, min(25.0, depth_levels * 2.5))
+        envelope.confidence_score = max(envelope.confidence_score, 50.0 + time_boost + depth_boost)
+        if spread_cents > 5.0:
+            return None, "sports_spread_too_wide"
+        envelope.fair_probability = mid
+        envelope.edge = abs(float(envelope.fair_probability) - float(entry_price))
+    elif category == "politics":
+        implied = (yes_ask_eff + yes_bid_eff) / 2.0 if yes_ask_eff > 0 and yes_bid_eff >= 0 else entry_price
+        envelope.fair_probability = implied
+        envelope.edge = abs(float(envelope.fair_probability) - float(entry_price))
+        if envelope.confidence_score < 60:
+            return None, "low_confidence"
+        if envelope.edge < 0.03:
+            return None, "low_edge"
+
+    cat_edge = (getattr(TUNING, 'category_edge_bps', None) or {}).get(category, -1)
     min_edge_bps = cat_edge if cat_edge > 0 else TUNING.min_edge_bps
     fair_gap = abs(float(envelope.fair_probability) - float(entry_price))
     if (entry_price <= TUNING.extreme_price_min or entry_price >= TUNING.extreme_price_max) and (float(envelope.edge) * 10000.0 < min_edge_bps):
         return None, "extreme_price_without_edge"
     if float(envelope.edge) * 10000.0 < min_edge_bps:
         return None, "low_edge"
-    if fair_gap < TUNING.min_fair_prob_gap:
+    sports_min_gap = 0.02 if category == "sports" and spread_cents <= 5.0 and envelope.confidence_score >= 60 else TUNING.min_fair_prob_gap
+    if fair_gap < sports_min_gap:
         return None, "low_fair_prob_gap"
     if envelope.projection_score < TUNING.min_projection_score:
         return None, "failed_projection"
