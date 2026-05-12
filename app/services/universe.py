@@ -1,93 +1,201 @@
+"""
+UniverseService — market discovery & filtering for Poly Trading MVP.
+Categories: sports, politics, crypto, climate, economics.
+"""
+
 import os
-import time
-import logging
-from typing import List
-
-log = logging.getLogger("app.services.universe")
-
-MARKET_CACHE_TTL_S = int(os.getenv("MARKET_CACHE_TTL_S", "30"))
-
-UNIVERSE_MAX_DAYS = int(os.getenv("UNIVERSE_MAX_DAYS", "90"))
-UNIVERSE_MIN_OI = int(os.getenv("UNIVERSE_MIN_OI", "0"))
-UNIVERSE_MIN_SEC = int(os.getenv("UNIVERSE_MIN_SEC", "900"))
-UNIVERSE_MIN_VOLUME = int(os.getenv("UNIVERSE_MIN_VOLUME", "5"))
-UNIVERSE_TOP_N = int(os.getenv("UNIVERSE_TOP_N", "30"))
-UNIVERSE_RECENT_S = int(os.getenv("UNIVERSE_RECENT_S", "240"))
-
-_market_cache = {
-    "markets": [],
-    "ts": 0.0,
-}
+import asyncio
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from enum import Enum
+import httpx
+from datetime import datetime, timedelta
 
 
-def persist_markets(markets: List[dict]) -> int:
+class Category(Enum):
+    SPORTS = "sports"
+    POLITICS = "politics"
+    CRYPTO = "crypto"
+    CLIMATE = "climate"
+    ECONOMICS = "economics"
+
+
+@dataclass
+class Market:
+    id: str
+    title: str
+    category: Category
+    confidence: float          # 0.0 - 1.0
+    ev: Optional[float]        # expected value, optional
+    liquidity: float
+    spread: float              # bid-ask spread
+    volume_24h: float
+    ends_at: datetime
+    url: str
+
+
+class UniverseService:
     """
-    Persist markets to in-process cache with monotonic timestamp.
-
-    Previously the cache write succeeded but the read path was looking at a
-    stale dict key, so every cycle fired
-    'sync_markets_cache_empty falling_back_to_fetch'. Now read/write share
-    the same module-level _market_cache dict and use time.monotonic() so
-    we are immune to wall-clock skew.
+    Fetches, scores, and filters Polymarket US markets.
+    Keeps singles-first, high-confidence, market-quality-first rules.
     """
-    global _market_cache
-    _market_cache["markets"] = list(markets)
-    _market_cache["ts"] = time.monotonic()
-    log.info("persist_markets saved=%d cache_ts=%.1f", len(markets), _market_cache["ts"])
-    return len(markets)
 
+    BANKROLL_PCT: Dict[int, float] = {
+        1: 0.02,
+        2: 0.01,
+        3: 0.0075,
+        4: 0.005,
+    }
 
-def get_cached_markets() -> List[dict]:
-    """Return cached markets if fresh, empty list otherwise."""
-    if not _market_cache["markets"]:
-        return []
-    age = time.monotonic() - _market_cache["ts"]
-    if age <= MARKET_CACHE_TTL_S:
-        log.debug("market_cache_hit age_s=%.1f count=%d", age, len(_market_cache["markets"]))
-        return list(_market_cache["markets"])
-    log.debug("market_cache_stale age_s=%.1f ttl_s=%d", age, MARKET_CACHE_TTL_S)
-    return []
+    def __init__(
+        self,
+        api_base: Optional[str] = None,
+        min_confidence: float = 0.60,
+        min_liquidity: float = 5000.0,
+        max_spread: float = 0.05,
+        allowed_categories: Optional[List[Category]] = None,
+    ):
+        self.api_base = api_base or os.getenv(
+            "DASHBOARD_BASE_URL", "https://polymarket.com/api"
+        )
+        self.min_confidence = min_confidence
+        self.min_liquidity = min_liquidity
+        self.max_spread = max_spread
+        self.allowed_categories = allowed_categories or list(Category)
+        self._cache: List[Market] = []
+        self._last_fetch: Optional[datetime] = None
 
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
 
-def invalidate_cache() -> None:
-    """Force the next read to miss. Use after explicit refreshes."""
-    global _market_cache
-    _market_cache["markets"] = []
-    _market_cache["ts"] = 0.0
+    async def refresh(self) -> List[Market]:
+        """Fetch latest markets and cache them."""
+        raw = await self._fetch_raw()
+        scored = [self._score(m) for m in raw]
+        filtered = [m for m in scored if self._passes_filters(m)]
+        # Sort: confidence desc, then liquidity desc, then EV desc
+        filtered.sort(key=lambda m: (m.confidence, m.liquidity, m.ev or 0), reverse=True)
+        self._cache = filtered
+        self._last_fetch = datetime.utcnow()
+        return filtered
 
+    async def get_candidates(
+        self,
+        category: Optional[Category] = None,
+        min_confidence: Optional[float] = None,
+        top_n: int = 20,
+    ) -> List[Market]:
+        """Return top-N trade candidates."""
+        if self._stale():
+            await self.refresh()
+        markets = self._cache
+        if category:
+            markets = [m for m in markets if m.category == category]
+        if min_confidence is not None:
+            markets = [m for m in markets if m.confidence >= min_confidence]
+        return markets[:top_n]
 
-def universe_filter(markets: List[dict]) -> List[dict]:
-    """
-    Apply universe gates. Logs total/kept/removed.
-    Keeps markets that satisfy all of:
-      - close_time within UNIVERSE_MAX_DAYS
-      - time to close >= UNIVERSE_MIN_SEC
-      - open_interest >= UNIVERSE_MIN_OI
-      - volume >= UNIVERSE_MIN_VOLUME
-    """
-    if not markets:
-        log.info("universe_filter total=0 kept=0 removed=0")
-        return []
+    def size_position(self, market: Market, bankroll: float, legs: int = 1) -> float:
+        """Fixed bankroll % sizing. README: 1-leg = 2%, 2-leg = 1%, etc."""
+        pct = self.BANKROLL_PCT.get(legs, 0.005)
+        return round(bankroll * pct, 2)
 
-    now_s = time.time()
-    max_close_s = now_s + (UNIVERSE_MAX_DAYS * 86400)
-    kept: List[dict] = []
+    async def daily_audit(self, trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Run end-of-day audit to learn from prior trades."""
+        now = datetime.utcnow()
+        summary = {
+            "date": now.isoformat(),
+            "total_trades": len(trades),
+            "wins": sum(1 for t in trades if t.get("pnl", 0) > 0),
+            "losses": sum(1 for t in trades if t.get("pnl", 0) <= 0),
+            "net_pnl": sum(t.get("pnl", 0) for t in trades),
+            "avg_confidence": (
+                sum(t.get("confidence", 0) for t in trades) / len(trades)
+                if trades else 0
+            ),
+            "learnings": [],
+        }
+        for t in trades:
+            if t.get("pnl", 0) < 0 and t.get("confidence", 0) > 0.8:
+                summary["learnings"].append(
+                    f"High-confidence loss on {t.get('market_id')}: review model."
+                )
+        return summary
 
-    for m in markets:
-        close_ts = m.get("close_ts") or m.get("close_time_ts") or 0
-        oi = m.get("open_interest", 0) or 0
-        vol = m.get("volume", 0) or 0
+    # ------------------------------------------------------------------ #
+    # Internals
+    # ------------------------------------------------------------------ #
 
-        if close_ts and close_ts > max_close_s:
-            continue
-        if close_ts and (close_ts - now_s) < UNIVERSE_MIN_SEC:
-            continue
-        if oi < UNIVERSE_MIN_OI:
-            continue
-        if vol < UNIVERSE_MIN_VOLUME:
-            continue
-        kept.append(m)
+    async def _fetch_raw(self) -> List[Dict[str, Any]]:
+        """Placeholder: replace with real Polymarket US API/SDK call."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{self.api_base}/markets",
+                params={"active": "true", "limit": 200}
+            )
+            resp.raise_for_status()
+            return resp.json().get("data", [])
 
-    removed = len(markets) - len(kept)
-    log.info("universe_filter total=%d kept=%d removed=%d", len(markets), len(kept), removed)
-    return kept
+    def _score(self, raw: Dict[str, Any]) -> Market:
+        """Convert raw API record to scored Market."""
+        cat = self._infer_category(raw.get("tags", []), raw.get("title", ""))
+        confidence = self._compute_confidence(raw)
+        return Market(
+            id=raw.get("id") or raw.get("slug", "unknown"),
+            title=raw.get("title", "Untitled"),
+            category=cat,
+            confidence=confidence,
+            ev=raw.get("expected_value"),
+            liquidity=raw.get("liquidity", 0),
+            spread=raw.get("spread", 0.05),
+            volume_24h=raw.get("volume24h", 0),
+            ends_at=datetime.fromisoformat(
+                raw.get("endDate", "2026-12-31").replace("Z", "+00:00")
+            ),
+            url=raw.get("url", ""),
+        )
+
+    def _passes_filters(self, m: Market) -> bool:
+        if m.category not in self.allowed_categories:
+            return False
+        if m.confidence < self.min_confidence:
+            return False
+        if m.liquidity < self.min_liquidity:
+            return False
+        if m.spread > self.max_spread:
+            return False
+        if m.ends_at < datetime.utcnow() + timedelta(hours=1):
+            return False
+        return True
+
+    def _stale(self) -> bool:
+        if self._last_fetch is None:
+            return True
+        return datetime.utcnow() - self._last_fetch > timedelta(minutes=5)
+
+    @staticmethod
+    def _infer_category(tags: List[str], title: str) -> Category:
+        text = " ".join(tags + [title]).lower()
+        if any(k in text for k in ("sport", "nba", "nfl", "soccer", "baseball")):
+            return Category.SPORTS
+        if any(k in text for k in ("election", "president", "senate", "vote", "poll")):
+            return Category.POLITICS
+        if any(k in text for k in ("bitcoin", "btc", "eth", "crypto", "ethereum", "blockchain")):
+            return Category.CRYPTO
+        if any(k in text for k in ("climate", "temperature", "carbon", "weather", "warming")):
+            return Category.CLIMATE
+        if any(k in text for k in ("gdp", "inflation", "fed", "rate", "unemployment", "cpi")):
+            return Category.ECONOMICS
+        return Category.POLITICS
+
+    @staticmethod
+    def _compute_confidence(raw: Dict[str, Any]) -> float:
+        """Heuristic confidence score 0-1 based on market quality metrics."""
+        liquidity = raw.get("liquidity", 0)
+        volume = raw.get("volume24h", 0)
+        spread = raw.get("spread", 0.05)
+        liq_score = min(liquidity / 50_000, 1.0)
+        vol_score = min(volume / 20_000, 1.0)
+        spread_score = max(0, 1 - spread * 20)
+        return round((liq_score * 0.4 + vol_score * 0.3 + spread_score * 0.3), 3)
