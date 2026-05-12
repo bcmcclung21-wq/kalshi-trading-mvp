@@ -192,3 +192,17 @@ class LearnedPrior(Base):
     win_rate: Mapped[float] = mapped_column(Float, default=0.5)
     multiplier: Mapped[float] = mapped_column(Float, default=1.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, index=True)
+
+
+class CashoutOrder(Base):
+    __tablename__ = "cashout_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    original_order_id: Mapped[int] = mapped_column(Integer, index=True)
+    ticker: Mapped[str] = mapped_column(String(128), index=True)
+    side: Mapped[str] = mapped_column(String(8), default="SELL")
+    cashout_type: Mapped[str] = mapped_column(String(32), index=True)
+    size: Mapped[float] = mapped_column(Float, default=0.0)
+    price: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
