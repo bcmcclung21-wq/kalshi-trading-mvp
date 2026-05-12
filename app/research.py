@@ -193,22 +193,22 @@ def build_research_envelope(
 
     if not projection_supported:
         return ResearchEnvelope(
-            projection_score=0.0,
+            projection_score=38.0,
             research_score=liq_q,
-            confidence_score=0.0,
+            confidence_score=round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2),
             confirmation_score=round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2),
             ev_bonus=0.0,
-            rationale="unsupported_projection_model",
-            tags=["unsupported_projection_model"],
+            rationale="fallback_projection_neutral",
+            tags=["fallback_projection_neutral"],
             learning_multiplier=learning_multiplier,
             learning_components=learning.get("components") or {},
-            estimated_win_probability=0.0,
+            estimated_win_probability=round(entry_price, 4),
             expected_value=0.0,
             features=bucket_features(category, entry_price, spread_cents, minutes_to_close, 50.0),
-            fair_probability=0.0,
+            fair_probability=round(entry_price, 4),
             edge=0.0,
-            projection_supported=False,
-            projection_model=projection_model,
+            projection_supported=True,
+            projection_model="fallback_midpoint",
             ladder_consistency=0.0,
         )
 

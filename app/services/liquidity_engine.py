@@ -11,6 +11,7 @@ from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from app.db import SessionLocal
 from app.liquidity import LiquidityConfig, LiquiditySnapshot, RollingMarketState, profile_liquidity
 from app.models import MarketMicrostructureState
+from app.strategy import TUNING
 
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,14 @@ class LiquidityEngine:
         if not snap:
             state.stale_cycles += 1
             self.active_liquid_markets.discard(ticker)
-            if state.stale_cycles > 5:
+            stale_limit_cycles = max(1, int((self.cfg.stale_threshold_minutes * 60) / max(1, TUNING.check_interval_sec)))
+            inactive_limit_cycles = max(stale_limit_cycles + 1, int((self.cfg.inactive_threshold_minutes * 60) / max(1, TUNING.check_interval_sec)))
+            if state.stale_cycles >= inactive_limit_cycles:
                 self.stale_markets.add(ticker)
+                self.inactive_markets.discard(ticker)
+            elif state.stale_cycles >= stale_limit_cycles:
+                self.inactive_markets.add(ticker)
+                self.stale_markets.discard(ticker)
             else:
                 self.inactive_markets.add(ticker)
             return None

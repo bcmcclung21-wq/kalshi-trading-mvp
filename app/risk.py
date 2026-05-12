@@ -66,7 +66,10 @@ def category_exposure_ok(category: str, positions: list[dict]) -> bool:
     if projected_total <= 0:
         return True
     projected_share = (current + 1) / projected_total
-    return projected_share <= max(1.0, TUNING.max_category_exposure_pct * 10) if TUNING.max_category_exposure_pct >= 1.0 else projected_share <= TUNING.max_category_exposure_pct
+    limit = TUNING.max_category_exposure_pct
+    if limit >= 1.0:
+        limit = 1.0
+    return projected_share <= limit
 
 
 def score_candidate(
