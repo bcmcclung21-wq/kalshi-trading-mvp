@@ -26,6 +26,7 @@ from app.services.liquidity_engine import LiquidityEngine
 from app.liquidity import LiquidityConfig
 from app.services.resilience import BreakerRegistry
 from app.strategy import TUNING
+from app.calibration import compute_brier, is_trading_halted, persist_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ class TradingEngine:
             asyncio.create_task(self.reconcile_loop()),
             asyncio.create_task(self.audit_loop()),
         ]
+        self._tasks.append(
+            asyncio.create_task(self.calibration_loop())
+        )
 
     async def _seed_priors_on_boot(self) -> None:
         """One-shot rebuild on startup so priors reflect existing settlements
@@ -84,6 +88,34 @@ class TradingEngine:
             logger.info("learning_priors_seed_on_boot status=%s", result.get("status"))
         except Exception as exc:
             logger.warning("learning_priors_seed_failed err=%s", exc)
+
+    async def calibration_loop(self) -> None:
+        while True:
+            await self._guarded(self._run_calibration_check)
+            await asyncio.sleep(TUNING.calibration_interval_sec)
+
+    async def _run_calibration_check(self) -> None:
+        result = compute_brier(
+            window_size=getattr(TUNING, "calibration_window_size", 50),
+            threshold=getattr(TUNING, "calibration_brier_threshold", 0.25),
+        )
+        persist_snapshot(result)
+        if result["status"] == "halted" or is_trading_halted(
+            threshold=getattr(TUNING, "calibration_brier_threshold", 0.25),
+            window_size=getattr(TUNING, "calibration_window_size", 50),
+        ):
+            self._trading_disabled_until = time.time() + getattr(TUNING, "calibration_cooldown_sec", 300)
+            logger.warning(
+                "calibration_halt brier=%.4f threshold=%.4f trades=%d cooldown_sec=%d",
+                result["brier_score"],
+                getattr(TUNING, "calibration_brier_threshold", 0.25),
+                result["trades_evaluated"],
+                getattr(TUNING, "calibration_cooldown_sec", 300),
+            )
+        else:
+            if self._trading_disabled_until > time.time():
+                logger.info("calibration_recovered brier=%.4f trading_resumed", result["brier_score"])
+            self._trading_disabled_until = 0.0
 
     async def stop(self) -> None:
         for task in self._tasks:
@@ -239,6 +271,9 @@ class TradingEngine:
             object.__setattr__(TUNING, "auto_execute", True)
         if self._trading_disabled_until > time.time():
             logger.warning("circuit_breaker_blocked remaining_sec=%d", int(self._trading_disabled_until - time.time()))
+            return
+        if self._trading_disabled_until > time.time():
+            logger.warning("cycle_skipped reason=calibration_halt remaining_sec=%d", int(self._trading_disabled_until - time.time()))
             return
         if self._trading_disabled_until and self._trading_disabled_until <= time.time():
             logger.info("circuit_breaker_closed")
@@ -648,6 +683,11 @@ class TradingEngine:
                 }
             )
         summary = summarize_settlements(prepared)
+        cal_result = compute_brier(
+            window_size=getattr(TUNING, "calibration_window_size", 50),
+            threshold=getattr(TUNING, "calibration_brier_threshold", 0.25),
+        )
+        persist_snapshot(cal_result)
 
         learning_summary: dict = {"status": "skipped"}
         try:
@@ -671,6 +711,9 @@ class TradingEngine:
                     feature_breakdown_json=json.dumps(summary.get("feature_breakdown") or {}),
                     calibration_json=json.dumps(summary.get("calibration") or {}),
                     learning_summary_json=json.dumps(learning_summary or {}),
+                    rolling_brier=cal_result["brier_score"],
+                    brier_threshold=getattr(TUNING, "calibration_brier_threshold", 0.25),
+                    trades_in_window=cal_result["trades_evaluated"],
                 )
             )
             db.commit()

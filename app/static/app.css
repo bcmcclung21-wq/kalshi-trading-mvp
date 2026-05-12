@@ -196,3 +196,9 @@ ul {
 li {
   margin-bottom: 6px;
 }
+
+.calibration-panel { border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem; }
+.calibration-panel .status-ok { color: green; }
+.calibration-panel .status-halted { color: red; }
+.calibration-panel table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+.calibration-panel th, .calibration-panel td { border: 1px solid #ddd; padding: 0.3rem; text-align: center; }

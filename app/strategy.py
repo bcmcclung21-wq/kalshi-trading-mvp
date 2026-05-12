@@ -42,6 +42,10 @@ class RuntimeTuning:
     reconcile_interval_sec: int = 60
     audit_interval_sec: int = 300
     daily_audit_hour_utc: int = 12
+    calibration_interval_sec: int = 300
+    calibration_window_size: int = 50
+    calibration_brier_threshold: float = 0.25
+    calibration_cooldown_sec: int = 300
 
     min_volume: float = 5.0
     min_open_interest: float = 2.0
@@ -93,6 +97,10 @@ TUNING = RuntimeTuning(
     reconcile_interval_sec=_env_int("RECONCILE_INTERVAL_SEC", 60),
     audit_interval_sec=_env_int("AUDIT_INTERVAL_SEC", 300),
     daily_audit_hour_utc=_env_int("DAILY_AUDIT_HOUR_UTC", 12),
+    calibration_interval_sec=_env_int("CALIBRATION_INTERVAL_SEC", 300),
+    calibration_window_size=_env_int("CALIBRATION_WINDOW_SIZE", 50),
+    calibration_brier_threshold=_env_float("CALIBRATION_BRIER_THRESHOLD", 0.25),
+    calibration_cooldown_sec=_env_int("CALIBRATION_COOLDOWN_SEC", 300),
     min_volume=_env_float("MIN_VOLUME", 5.0),
     min_open_interest=_env_float("MIN_OPEN_INTEREST", 2.0),
     max_spread_cents=_env_float("MAX_SPREAD_CENTS", 20.0),

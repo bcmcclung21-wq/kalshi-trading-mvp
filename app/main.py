@@ -20,6 +20,7 @@ from app.models import AuditRun, CandidateRun, MarketSnapshot, OrderRecord, Posi
 from app.observability import configure_logging
 from app.schemas import ResearchNoteCreate
 from app.strategy import BANKROLL_RULES, CATEGORIES, TUNING
+from app.calibration import latest_snapshot
 
 logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="app/templates")
@@ -170,6 +171,20 @@ def _dashboard_payload() -> dict:
         ]
 
     latest_audit = audits[0] if audits else None
+    latest_calibration = None
+    try:
+        cal = latest_snapshot()
+        if cal:
+            latest_calibration = {
+                "computed_at": _dt(cal.computed_at),
+                "brier_score": cal.brier_score,
+                "trades_evaluated": cal.trades_evaluated,
+                "threshold": cal.threshold,
+                "status": cal.status,
+                "buckets": _loads(cal.bucket_breakdown_json, {}),
+            }
+    except Exception as exc:
+        logger.warning("dashboard_calibration_fetch_failed err=%s", exc)
     return {
         "boot_status": {
             **BOOT_STATUS,
@@ -185,6 +200,9 @@ def _dashboard_payload() -> dict:
             "max_orders_per_cycle": TUNING.max_orders_per_cycle,
             "max_orderbooks_per_cycle": TUNING.max_orderbooks_per_cycle,
             "max_category_exposure_pct": TUNING.max_category_exposure_pct,
+            "calibration_brier_threshold": TUNING.calibration_brier_threshold,
+            "calibration_window_size": TUNING.calibration_window_size,
+            "calibration_cooldown_sec": TUNING.calibration_cooldown_sec,
         },
         "totals": totals,
         "candidates": candidates,
@@ -192,6 +210,7 @@ def _dashboard_payload() -> dict:
         "positions": positions,
         "audits": audits,
         "latest_audit": latest_audit,
+        "latest_calibration": latest_calibration,
         "research_notes": notes,
         "categories": CATEGORIES,
         "bankroll_rules": BANKROLL_RULES,
@@ -346,6 +365,22 @@ async def api_positions(limit: int = 50):
 @app.get("/api/audits")
 async def api_audits(limit: int = 10):
     return _dashboard_payload()["audits"][:limit]
+
+
+@app.get("/api/calibration")
+async def api_calibration():
+    cal = latest_snapshot()
+    if not cal:
+        return {"ok": False, "detail": "no snapshots"}
+    return {
+        "ok": True,
+        "computed_at": cal.computed_at.isoformat() if cal.computed_at else None,
+        "brier_score": cal.brier_score,
+        "trades_evaluated": cal.trades_evaluated,
+        "threshold": cal.threshold,
+        "status": cal.status,
+        "buckets": _loads(cal.bucket_breakdown_json, {}),
+    }
 
 
 @app.post("/api/research-notes")
