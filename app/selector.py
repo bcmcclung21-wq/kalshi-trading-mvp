@@ -133,12 +133,14 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "too_far_to_close": 0,
         "outside_settlement_window": 0,
         "not_same_day_settlement": 0,
+        "sports_not_today": 0,
         "missing_close_time": 0,
         "packaged_market": 0,
     }
     valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
     now = datetime.now(timezone.utc)
     today_market_tz = datetime.now(MARKET_TZ).date()
+    today_utc = datetime.now(timezone.utc).date()
 
     for market in markets:
         cat = str(market.get("category") or "unknown").lower()
@@ -175,14 +177,25 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             rejects["too_close_to_close"] += 1
             continue
         if cat == "sports":
-            # Sports are strictly same-day; bypass generic max-days/too-far window.
-            pass
+            market_dt = market.get("close_date") or market.get("end_date")
+            market_date = None
+            if hasattr(market_dt, "date"):
+                market_date = market_dt.date()
+            elif market_dt:
+                parsed = _parse_iso(market_dt)
+                if parsed is not None:
+                    market_date = parsed.astimezone(timezone.utc).date()
+            if market_date is None and close_dt is not None:
+                market_date = close_dt.astimezone(timezone.utc).date()
+            if market_date != today_utc:
+                rejects["sports_not_today"] += 1
+                continue
         elif minutes > max_minutes:
             rejects["too_far_to_close"] += 1
             continue
 
         enforce_same_day = TUNING.same_day_only if cat != "sports" else TUNING.sports_same_day_only
-        if enforce_same_day:
+        if enforce_same_day and cat != "sports":
             market_date = _extract_market_date(market)
             if market_date is not None:
                 compare_date = market_date

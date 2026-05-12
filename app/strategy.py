@@ -23,7 +23,17 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
-    return int(str(raw).strip()) if raw not in (None, "") else default
+    if raw in (None, ""):
+        return default
+    cleaned = str(raw).strip().strip('"').strip("'")
+    try:
+        return int(cleaned)
+    except ValueError:
+        import logging
+        logging.getLogger("app.strategy").warning(
+            f"Invalid int env var {name}={raw!r}, using default {default}"
+        )
+        return default
 
 
 def _env_float(name: str, default: float) -> float:

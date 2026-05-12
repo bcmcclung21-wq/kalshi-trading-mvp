@@ -1,81 +1,62 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from sqlalchemy import select
+from typing import List
 
-from app.db import SessionLocal
-from app.models import CashoutOrder, OrderRecord
-from app.strategy import TUNING
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.cashout")
 
 
 class CashoutManager:
-    def __init__(self, poly_client) -> None:
-        self.poly = poly_client
-        self._last_cashout: dict[str, datetime] = {}
-        self._breakeven_enabled: set[str] = set()
+    def __init__(self, api_client, db_session=None):
+        self.api = api_client
+        self.db = db_session
 
-    async def evaluate_positions(self) -> None:
-        if not TUNING.cashout_enabled:
+    async def evaluate_positions(self, positions: List[dict]):
+        """Evaluate open positions and optionally execute cashouts."""
+        from app.config import settings
+
+        if not getattr(settings, "cashout_enabled", True):
             return
-        positions = await self.poly.get_positions()
-        tickers = [str(p.get("ticker") or "") for p in positions if str(p.get("ticker") or "")]
-        books = await self.poly.get_orderbooks(tickers, depth=10) if tickers else {}
-        with SessionLocal() as db:
-            for p in positions:
-                ticker = str(p.get("ticker") or "")
-                if not ticker:
-                    continue
-                now = datetime.now(timezone.utc)
-                last_cashout = self._last_cashout.get(ticker)
-                if last_cashout and (now - last_cashout).total_seconds() < 60:
-                    continue
-                pending = db.execute(select(CashoutOrder).where(CashoutOrder.ticker == ticker, CashoutOrder.status == "pending")).scalars().first()
-                if pending:
-                    continue
-                order = db.execute(select(OrderRecord).where(OrderRecord.ticker == ticker).order_by(OrderRecord.created_at.desc())).scalars().first()
-                if not order:
-                    continue
-                side = str(order.side or "YES").upper()
-                qty = float(p.get("quantity") or 0)
-                if qty <= 0:
-                    continue
-                entry = float(order.price_cents or 0) / 100.0
-                book = books.get(ticker) or {}
-                yes_bids = book.get("yes_bids") or book.get("yes") or []
-                no_bids = book.get("no_bids") or book.get("no") or []
-                yes_bid = max([float(x.get("price", 0)) for x in yes_bids], default=0.0)
-                no_bid = max([float(x.get("price", 0)) for x in no_bids], default=0.0)
-                cur = yes_bid if side == "YES" else no_bid
-                if cur <= 0:
-                    continue
-                if entry <= 0:
-                    continue
-                unrealized_pct = ((cur - entry) / entry) * 100.0
-                if side == "NO":
-                    unrealized_pct = ((no_bid - entry) / entry) * 100.0
-                trigger = None
-                size = 0.0
-                stop_loss_pct = 0.0 if ticker in self._breakeven_enabled else TUNING.cashout_stop_loss_pct
-                if unrealized_pct <= stop_loss_pct:
-                    trigger = "stop_loss"; size = qty
-                elif unrealized_pct >= TUNING.cashout_tp3_pct:
-                    trigger = "take_profit_3"; size = qty * (TUNING.cashout_tp3_size_pct / 100.0)
-                elif unrealized_pct >= TUNING.cashout_tp2_pct:
-                    trigger = "take_profit_2"; size = qty * (TUNING.cashout_tp2_size_pct / 100.0)
-                elif unrealized_pct >= TUNING.cashout_tp1_pct:
-                    trigger = "take_profit_1"; size = qty * (TUNING.cashout_tp1_size_pct / 100.0)
-                    self._breakeven_enabled.add(ticker)
-                if not trigger or size <= 0:
-                    continue
-                self._last_cashout[ticker] = now
-                size = min(qty, max(1.0, round(size)))
-                logger.info("cashout_triggered ticker=%s type=%s size=%s price=%.4f unrealized_pct=%.2f", ticker, trigger, size, cur, unrealized_pct)
-                status = "pending"
-                if TUNING.auto_execute and self.poly.auth_status.ok:
-                    resp = await self.poly.place_sell_order(ticker=ticker, outcome=side, size=int(size), price=cur)
-                    status = str(resp.get("status") or "pending")
-                db.add(CashoutOrder(original_order_id=order.id, ticker=ticker, side="SELL", cashout_type=trigger, size=float(size), price=float(cur), status=status))
-            db.commit()
+
+        stop_loss_pct = getattr(settings, "cashout_stop_loss_pct", -15.0)
+        tp1_pct = getattr(settings, "cashout_tp1_pct", 25.0)
+        tp1_size = getattr(settings, "cashout_tp1_size_pct", 40.0)
+
+        for pos in positions:
+            ticker = pos.get("ticker")
+            side = str(pos.get("side") or "YES")
+            size = float(pos.get("size", pos.get("quantity", 0)) or 0)
+            entry = float(pos.get("entry_price", pos.get("avg_price", 0)) or 0)
+            current_bid = float(pos.get("current_bid", pos.get("current_price", 0)) or 0)
+
+            if size <= 0 or entry <= 0:
+                continue
+
+            if side.upper() == "YES":
+                unrealized_pct = ((current_bid - entry) / entry) * 100
+            else:
+                unrealized_pct = ((entry - current_bid) / entry) * 100
+
+            action = None
+            cashout_size = 0.0
+            if unrealized_pct <= stop_loss_pct:
+                action = "stop_loss"
+                cashout_size = size
+            elif unrealized_pct >= tp1_pct:
+                action = "take_profit_1"
+                cashout_size = size * (tp1_size / 100.0)
+
+            if action and cashout_size > 0:
+                logger.info(
+                    "cashout_signal ticker=%s action=%s unrealized_pct=%.2f size=%.4f",
+                    ticker, action, unrealized_pct, cashout_size
+                )
+                if getattr(settings, "auto_execute", False):
+                    await self._submit_sell(str(ticker), side, cashout_size, current_bid)
+
+    async def _submit_sell(self, ticker: str, side: str, size: float, price: float):
+        try:
+            result = await self.api.place_sell_order(ticker=ticker, outcome=side, size=int(max(1, round(size))), price=price)
+            logger.info("cashout_executed ticker=%s size=%.4f price=%.4f resp=%s", ticker, size, price, result)
+        except Exception as exc:
+            logger.error("cashout_failed ticker=%s error=%s", ticker, exc)
