@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+import requests
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -48,6 +49,8 @@ class PolymarketClient:
         self.secret_key = os.getenv("POLYMARKET_SECRET_KEY", settings.polymarket_secret_key).strip()
         self.api_base_url = POLYMARKET_API_BASE
         self.gateway_base_url = POLYMARKET_GATEWAY_BASE
+        self.base_url = os.getenv("POLYMARKET_API_URL", "https://api.polymarket.us")
+        self.session = requests.Session()
         self.client = None
         self.last_paginate_pages = 0
 
@@ -98,6 +101,17 @@ class PolymarketClient:
         if path == "/markets/settlement":
             slug = params.get("marketSlug") or params.get("slug")
             return self.client.markets.settlement(slug)
+        if path.startswith("/exchange"):
+            url = f"{self.base_url}{path}"
+            method_up = str(method).upper()
+            if method_up == "POST":
+                resp = self.session.post(url, json=json_payload, timeout=30)
+            elif method_up == "DELETE":
+                resp = self.session.delete(url, timeout=30)
+            else:
+                resp = self.session.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            return resp.json() if resp.text else {}
         raise ValueError(f"unsupported_path={path}")
 
     def _normalize_market(self, raw: dict[str, Any]) -> dict[str, Any]:
@@ -352,18 +366,21 @@ class PolymarketClient:
             return {"status": "rejected", "error": str(exc), "request": payload}
 
 
-    async def place_sell_order(self, ticker: str, outcome: str, size: int, price: float) -> dict[str, Any]:
+    async def place_sell_order(self, ticker: str, outcome: str, size: float, price: float) -> dict[str, Any]:
+        """Place a sell (ask) order on the CLOB."""
         payload = {
-            "side": "SELL",
+            "market": ticker,
             "outcome": str(outcome).upper(),
-            "size": int(size),
-            "price": float(max(0.01, min(0.99, price))),
-            "ticker": ticker,
+            "side": "SELL",
+            "type": "LIMIT",
+            "size": str(size),
+            "price": str(price),
         }
         if not self.auth_status.ok:
             return {"status": "dry_run", "request": payload}
         try:
             data = await self._request("POST", "/exchange/orders", json=payload)
+            log.info("sell_order_placed ticker=%s outcome=%s size=%s price=%s", ticker, outcome, size, price)
             return {"status": "submitted", "order_id": str(data.get("id") or ""), "raw": data}
         except Exception as exc:
             log.exception("sell_order_submit_failed ticker=%s", ticker)

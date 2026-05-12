@@ -480,6 +480,12 @@ class TradingEngine:
         rejected = 0
         candidates = []
         with SessionLocal() as db:
+            pending_orders = {
+                str(ticker)
+                for ticker in db.execute(select(OrderRecord.ticker).where(OrderRecord.status == "pending")).scalars().all()
+                if str(ticker or "")
+            }
+            open_positions = {str(p.get("ticker") or "") for p in position_rows if str(p.get("ticker") or "")}
             for market, book in zip(pool, orderbooks):
                 if isinstance(book, Exception):
                     logger.info("candidate_rejected ticker=%s reason=%s", market.get("ticker"), "orderbook_fetch_error")
@@ -539,6 +545,11 @@ class TradingEngine:
                 )
                 if not candidate:
                     logger.info("candidate_rejected ticker=%s side=%s entry=%.4f fair=%.4f edge=%.4f projection=%.2f confidence=%.2f total=%.2f spread=%.2f reason=%s", market.get("ticker"), "NA", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, spread, reason or "unknown")
+                    rejected += 1
+                    continue
+                ticker = str(candidate.ticker or "")
+                if ticker in pending_orders or ticker in open_positions:
+                    logger.info("candidate_rejected ticker=%s reason=%s", ticker, "duplicate_market")
                     rejected += 1
                     continue
                 if not duplicate_ticker_ok(candidate.ticker, position_rows):

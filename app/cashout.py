@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 class CashoutManager:
     def __init__(self, poly_client) -> None:
         self.poly = poly_client
+        self._last_cashout: dict[str, datetime] = {}
 
     async def evaluate_positions(self) -> None:
         if not TUNING.cashout_enabled:
@@ -24,6 +26,10 @@ class CashoutManager:
             for p in positions:
                 ticker = str(p.get("ticker") or "")
                 if not ticker:
+                    continue
+                now = datetime.now(timezone.utc)
+                last_cashout = self._last_cashout.get(ticker)
+                if last_cashout and (now - last_cashout).total_seconds() < 60:
                     continue
                 pending = db.execute(select(CashoutOrder).where(CashoutOrder.ticker == ticker, CashoutOrder.status == "pending")).scalars().first()
                 if pending:
@@ -61,6 +67,7 @@ class CashoutManager:
                     trigger = "take_profit_1"; size = qty * (TUNING.cashout_tp1_size_pct / 100.0)
                 if not trigger or size <= 0:
                     continue
+                self._last_cashout[ticker] = now
                 size = min(qty, max(1.0, round(size)))
                 logger.info("cashout_triggered ticker=%s type=%s size=%s price=%.4f unrealized_pct=%.2f", ticker, trigger, size, cur, unrealized_pct)
                 status = "pending"
