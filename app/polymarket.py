@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from polymarket_us import PolymarketUS
 
@@ -50,12 +50,12 @@ class PolyMarketAPI:
             logger.warning("orderbook_fetch_failed", extra={"ticker": ticker, "error": str(e)})
             return None
 
-    async def place_buy_order(self, ticker: str, price: float, size: float) -> Optional[Dict]:
+    async def place_buy_order(self, ticker: str, price: float, size: float, outcome: str = "YES") -> Optional[Dict]:
         if not self._auth_ok:
             logger.error("place_buy_order_rejected_no_auth", extra={"ticker": ticker})
             return None
         if os.getenv("AUTO_EXECUTE", "false").lower() != "true":
-            logger.info("dry_run_buy", extra={"ticker": ticker, "price": price, "size": size})
+            logger.info("dry_run_buy", extra={"ticker": ticker, "price": price, "size": size, "outcome": outcome})
             return {"dry_run": True}
         try:
             payload = {
@@ -63,20 +63,21 @@ class PolyMarketAPI:
                 "side": "buy",
                 "price": price,
                 "size": size,
+                "outcome": outcome,
             }
             result = await asyncio.to_thread(self.client.orders.create, payload)
-            logger.info("buy_order_submitted", extra={"ticker": ticker, "result": result})
+            logger.info("buy_order_submitted", extra={"ticker": ticker, "outcome": outcome, "result": result})
             return result
         except Exception as e:
             logger.error("buy_order_submit_failed", extra={"ticker": ticker, "error": str(e)})
             return None
 
-    async def place_sell_order(self, ticker: str, price: float, size: float) -> Optional[Dict]:
+    async def place_sell_order(self, ticker: str, price: float, size: float, outcome: str = "YES") -> Optional[Dict]:
         if not self._auth_ok:
             logger.error("place_sell_order_rejected_no_auth", extra={"ticker": ticker})
             return None
         if os.getenv("AUTO_EXECUTE", "false").lower() != "true":
-            logger.info("dry_run_sell", extra={"ticker": ticker, "price": price, "size": size})
+            logger.info("dry_run_sell", extra={"ticker": ticker, "price": price, "size": size, "outcome": outcome})
             return {"dry_run": True}
         try:
             payload = {
@@ -84,13 +85,24 @@ class PolyMarketAPI:
                 "side": "sell",
                 "price": price,
                 "size": size,
+                "outcome": outcome,
             }
             result = await asyncio.to_thread(self.client.orders.create, payload)
-            logger.info("sell_order_submitted", extra={"ticker": ticker, "result": result})
+            logger.info("sell_order_submitted", extra={"ticker": ticker, "outcome": outcome, "result": result})
             return result
         except Exception as e:
             logger.error("sell_order_submit_failed", extra={"ticker": ticker, "error": str(e)})
             return None
+
+    async def get_markets(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+        try:
+            return await asyncio.to_thread(
+                self.client.markets.list,
+                {"limit": limit, "offset": offset, "active": "true", "closed": "false", "archived": "false"}
+            )
+        except Exception as e:
+            logger.error("markets_fetch_failed", extra={"error": str(e)})
+            return []
 
     async def get_positions(self, limit: int = 100) -> list:
         try:

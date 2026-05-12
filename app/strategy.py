@@ -38,7 +38,17 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
-    return float(str(raw).strip()) if raw not in (None, "") else default
+    if raw in (None, ""):
+        return default
+    cleaned = str(raw).strip().strip('"').strip("'")
+    try:
+        return float(cleaned)
+    except ValueError:
+        import logging
+        logging.getLogger("app.strategy").warning(
+            f"Invalid float env var {name}={raw!r}, using default {default}"
+        )
+        return default
 
 
 @dataclass
