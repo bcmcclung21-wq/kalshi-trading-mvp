@@ -3,7 +3,6 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
-from app.cashout import CashoutManager
 from app.strategy import TUNING
 
 logger = logging.getLogger("app.engine")
@@ -47,7 +46,8 @@ class TradingEngine:
         self.max_spread = 0.05        # 5 cents max spread
         self.max_category_exposure = TUNING.max_category_exposure_pct
         self.max_orders_per_cycle = TUNING.max_orders_per_cycle
-        self.cashout = CashoutManager(api)
+        from app.cashout import CashoutManager
+        self.cashout_manager = CashoutManager(api_client=self.api, db_session=None)
 
     def _calculate_fair(self, book: CandidateBook) -> float:
         """Midpoint fair value with spread penalty."""
@@ -209,7 +209,12 @@ class TradingEngine:
         # Sort by total score
         candidates.sort(key=lambda x: x[0].total, reverse=True)
 
-        await self.cashout.evaluate_positions()
+        open_positions = await self.api.get_positions()
+        if hasattr(self, "cashout_manager") and self.cashout_manager:
+            try:
+                await self.cashout_manager.evaluate_positions(open_positions)
+            except Exception as e:
+                logger.warning(f"cashout_evaluate_error error={e}")
 
         # Execute top N (respecting AUTO_EXECUTE)
         orders_placed = []
