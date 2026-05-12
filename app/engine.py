@@ -383,15 +383,34 @@ class TradingEngine:
                     snap.no_ask,
                 )
                 continue
+            # Always rank — selector R0–R10 gates (bad_spread, bad_price,
+            # extreme_price_min/max) are the authoritative rejecters for
+            # one-sided / decided books. Dropping at this stage hides them.
             if snap.liquidity_score > 0:
                 liquidity_rank.append((snap.liquidity_score, m))
             else:
-                logger.info("liquidity_zero ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f spread=%.4f depth=%.2f", t, snap.yes_bid, snap.yes_ask, snap.no_bid, snap.no_ask, snap.spread, snap.effective_depth)
+                logger.info(
+                    "liquidity_zero ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f spread=%.4f depth=%.2f",
+                    t, snap.yes_bid, snap.yes_ask, snap.no_bid, snap.no_ask, snap.spread, snap.effective_depth,
+                )
+                # Still pass to selector with the lowest possible rank.
+                liquidity_rank.append((0.0, m))
         scored_pool = [m for _, m in sorted(liquidity_rank, key=lambda x: x[0], reverse=True)]
         pool = scored_pool + markets_without_books
-        logger.info("liquidity_filter scored=%d unscored=%d total=%d", len(scored_pool), len(markets_without_books), len(pool))
+        logger.info(
+            "liquidity_filter scored=%d unscored=%d total=%d",
+            len([s for s, _ in liquidity_rank if s > 0]),
+            len(markets_without_books) + len([s for s, _ in liquidity_rank if s == 0]),
+            len(pool),
+        )
         if self.liquidity:
-            logger.info("universe_state total=%d active=%d inactive=%d stale=%d", len(self.liquidity.market_state), len(self.liquidity.active_liquid_markets), len(self.liquidity.inactive_markets), len(self.liquidity.stale_markets))
+            logger.info(
+                "universe_state total=%d active=%d inactive=%d stale=%d",
+                len(self.liquidity.market_state),
+                len(self.liquidity.active_liquid_markets),
+                len(self.liquidity.inactive_markets),
+                len(self.liquidity.stale_markets),
+            )
         pool = diversified_pool(pool, TUNING.max_orderbooks_per_cycle, per_category=8)
         logger.info("pool_after_diversify count=%d", len(pool))
         ladder_groups = group_ladder_markets(pool)
