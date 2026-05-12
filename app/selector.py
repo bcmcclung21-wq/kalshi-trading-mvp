@@ -247,10 +247,14 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
     no_bid = best_bid(no_bids)
     no_ask = best_ask(no_asks)
 
-    if yes_ask <= 0 and yes_bid > 0:
-        yes_ask = yes_bid
-    if no_ask <= 0 and no_bid > 0:
-        no_ask = no_bid
+    if yes_ask <= 0 and no_bid > 0:
+        yes_ask = 1 - no_bid
+    if yes_bid <= 0 and no_ask > 0:
+        yes_bid = 1 - no_ask
+    if no_ask <= 0 and yes_bid > 0:
+        no_ask = 1 - yes_bid
+    if no_bid <= 0 and yes_ask > 0:
+        no_bid = 1 - yes_ask
 
     if yes_ask <= 0 and no_ask <= 0:
         return None

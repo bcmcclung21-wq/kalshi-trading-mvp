@@ -304,8 +304,12 @@ class TradingEngine:
                 no_ask_px = best_ask(list(book.get("no_asks") or []))
                 if yes_ask_px <= 0 and no_bid_px > 0:
                     yes_ask_px = 1 - no_bid_px
+                if yes_bid_px <= 0 and no_ask_px > 0:
+                    yes_bid_px = 1 - no_ask_px
                 if no_ask_px <= 0 and yes_bid_px > 0:
                     no_ask_px = 1 - yes_bid_px
+                if no_bid_px <= 0 and yes_ask_px > 0:
+                    no_bid_px = 1 - yes_ask_px
                 db.add(
                     OrderBookSnapshot(
                         ticker=str(ticker),
@@ -348,9 +352,36 @@ class TradingEngine:
                     t, yes_bids_count, yes_asks_count, no_bids_count, no_asks_count, yes_bid, yes_ask, no_bid, no_ask, raw_keys, market_data_keys,
                 )
                 continue
-            has_pair = ((snap.yes_bid > 0 and snap.yes_ask > 0) or (snap.no_bid > 0 and snap.no_ask > 0))
-            if not has_pair:
-                logger.info("liquidity_skip ticker=%s reason=no_usable_bid_ask_pair", t)
+            book = batch_books.get(t, {})
+            raw_top = (book.get("raw") or book) if isinstance((book.get("raw") or book), dict) else {}
+            raw_keys = sorted(list(raw_top.keys())) if isinstance(raw_top, dict) else []
+            native_yes_bid = best_bid(list(book.get("yes_bids") or book.get("yes") or [])) > 0
+            native_yes_ask = best_ask(list(book.get("yes_asks") or [])) > 0
+            native_no_bid = best_bid(list(book.get("no_bids") or book.get("no") or [])) > 0
+            native_no_ask = best_ask(list(book.get("no_asks") or [])) > 0
+            logger.info(
+                "normalized_book ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f source=yes_bid:%s yes_ask:%s no_bid:%s no_ask:%s raw_keys=%s",
+                t,
+                snap.yes_bid,
+                snap.yes_ask,
+                snap.no_bid,
+                snap.no_ask,
+                "native" if native_yes_bid else "complement",
+                "native" if native_yes_ask else "complement",
+                "native" if native_no_bid else "complement",
+                "native" if native_no_ask else "complement",
+                raw_keys,
+            )
+            has_executable_entry = (snap.yes_ask > 0) or (snap.no_ask > 0)
+            if not has_executable_entry:
+                logger.info(
+                    "liquidity_skip ticker=%s reason=no_executable_entry yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f",
+                    t,
+                    snap.yes_bid,
+                    snap.yes_ask,
+                    snap.no_bid,
+                    snap.no_ask,
+                )
                 continue
             if snap.liquidity_score > 0:
                 liquidity_rank.append((snap.liquidity_score, m))
@@ -382,8 +413,12 @@ class TradingEngine:
                 no_ask_px = best_ask(list(book.get("no_asks") or []))
                 if yes_ask_px <= 0 and no_bid_px > 0:
                     yes_ask_px = 1 - no_bid_px
+                if yes_bid_px <= 0 and no_ask_px > 0:
+                    yes_bid_px = 1 - no_ask_px
                 if no_ask_px <= 0 and yes_bid_px > 0:
                     no_ask_px = 1 - yes_bid_px
+                if no_bid_px <= 0 and yes_ask_px > 0:
+                    no_bid_px = 1 - yes_ask_px
                 spread = (yes_ask_px - yes_bid_px) if yes_ask_px > 0 and yes_bid_px > 0 else 0.0
                 logger.info(
                     "candidate_book ticker=%s yes_bid=%.4f yes_ask=%.4f no_bid=%.4f no_ask=%.4f spread=%.4f validation=%s",
