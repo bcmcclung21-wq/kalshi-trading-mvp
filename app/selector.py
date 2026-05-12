@@ -237,37 +237,75 @@ def best_ask(levels: list[Any]) -> float:
 
 
 def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | None:
+    """
+    Select the best executable side (YES or NO) from an orderbook.
+
+    Uses full binary complement reconstruction to derive effective prices,
+    then computes spread from those effective prices. Handles edge cases:
+    - Missing bids/asks on one side (reconstructed from complement)
+    - Zero prices (treated as valid, not falsy)
+    - Inverted markets (ask < bid) detected and rejected
+
+    Returns: (side, entry_price, spread_cents) or None if untradeable
+    """
     yes_bids = list(orderbook.get("yes_bids") or orderbook.get("yes") or [])
     yes_asks = list(orderbook.get("yes_asks") or [])
     no_bids = list(orderbook.get("no_bids") or orderbook.get("no") or [])
     no_asks = list(orderbook.get("no_asks") or [])
 
-    yes_bid = best_bid(yes_bids)
-    yes_ask = best_ask(yes_asks)
-    no_bid = best_bid(no_bids)
-    no_ask = best_ask(no_asks)
+    # Native prices from orderbook
+    yes_bid_native = best_bid(yes_bids)
+    yes_ask_native = best_ask(yes_asks)
+    no_bid_native = best_bid(no_bids)
+    no_ask_native = best_ask(no_asks)
 
-    if yes_ask <= 0 and no_bid > 0:
-        yes_ask = 1 - no_bid
-    if yes_bid <= 0 and no_ask > 0:
-        yes_bid = 1 - no_ask
-    if no_ask <= 0 and yes_bid > 0:
-        no_ask = 1 - yes_bid
-    if no_bid <= 0 and yes_ask > 0:
-        no_bid = 1 - yes_ask
+    # Derive missing prices from the other side's complement BEFORE computing spreads.
+    yes_bid = yes_bid_native
+    yes_ask = yes_ask_native
+    no_bid = no_bid_native
+    no_ask = no_ask_native
 
-    if yes_ask <= 0 and no_ask <= 0:
+    if yes_ask <= 0.0 and no_bid > 0.0:
+        yes_ask = 1.0 - no_bid
+    if yes_bid <= 0.0 and no_ask > 0.0:
+        yes_bid = 1.0 - no_ask
+    if no_ask <= 0.0 and yes_bid > 0.0:
+        no_ask = 1.0 - yes_bid
+    if no_bid <= 0.0 and yes_ask > 0.0:
+        no_bid = 1.0 - yes_ask
+
+    yes_bid = max(0.0, min(0.99, yes_bid))
+    yes_ask = max(0.0, min(0.99, yes_ask))
+    no_bid = max(0.0, min(0.99, no_bid))
+    no_ask = max(0.0, min(0.99, no_ask))
+
+    yes_executable = yes_ask > 0.0
+    no_executable = no_ask > 0.0
+
+    if not yes_executable and not no_executable:
         return None
 
-    yes_spread = max(0.0, (yes_ask - yes_bid) * 100) if yes_ask and yes_bid else 999.0
-    no_spread = max(0.0, (no_ask - no_bid) * 100) if no_ask and no_bid else 999.0
+    def _compute_spread(ask: float, bid: float, executable: bool) -> float:
+        """Compute spread in cents. Returns 999.0 for non-executable or inverted."""
+        if not executable or ask <= 0.0:
+            return 999.0
+        if bid < 0.0:
+            return 999.0
+        if ask < bid:
+            return 999.0
+        if bid == 0.0:
+            return ask * 100.0
+        return (ask - bid) * 100.0
+
+    yes_spread = _compute_spread(yes_ask, yes_bid, yes_executable)
+    no_spread = _compute_spread(no_ask, no_bid, no_executable)
 
     yes_quality = abs(yes_ask - 0.5) + (yes_spread / 100.0)
     no_quality = abs(no_ask - 0.5) + (no_spread / 100.0)
 
-    if yes_ask > 0 and yes_quality <= no_quality:
+    if yes_executable and yes_quality <= no_quality:
         return ("YES", yes_ask, yes_spread)
-    if no_ask > 0:
+    if no_executable:
         return ("NO", no_ask, no_spread)
     return None
 
@@ -297,17 +335,44 @@ def build_candidate(
     if quote is None:
         return None, "invalid_orderbook"
     side, entry_price, spread_cents = quote
-    yes_bid = best_bid(list(orderbook.get("yes_bids") or orderbook.get("yes") or []))
-    yes_ask = best_ask(list(orderbook.get("yes_asks") or []))
-    no_bid = best_bid(list(orderbook.get("no_bids") or orderbook.get("no") or []))
-    no_ask = best_ask(list(orderbook.get("no_asks") or []))
-    market["yes_bid"] = yes_bid
-    market["yes_ask"] = yes_ask
-    market["no_bid"] = no_bid
-    market["no_ask"] = no_ask
+    # Extract native prices from orderbook for logging/context
+    yes_bid_native = best_bid(list(orderbook.get("yes_bids") or orderbook.get("yes") or []))
+    yes_ask_native = best_ask(list(orderbook.get("yes_asks") or []))
+    no_bid_native = best_bid(list(orderbook.get("no_bids") or orderbook.get("no") or []))
+    no_ask_native = best_ask(list(orderbook.get("no_asks") or []))
+
+    # Compute effective prices using IDENTICAL logic to _best_quote_side().
+    yes_bid_eff = yes_bid_native
+    yes_ask_eff = yes_ask_native
+    no_bid_eff = no_bid_native
+    no_ask_eff = no_ask_native
+
+    if yes_ask_eff <= 0.0 and no_bid_eff > 0.0:
+        yes_ask_eff = 1.0 - no_bid_eff
+    if yes_bid_eff <= 0.0 and no_ask_eff > 0.0:
+        yes_bid_eff = 1.0 - no_ask_eff
+    if no_ask_eff <= 0.0 and yes_bid_eff > 0.0:
+        no_ask_eff = 1.0 - yes_bid_eff
+    if no_bid_eff <= 0.0 and yes_ask_eff > 0.0:
+        no_bid_eff = 1.0 - yes_ask_eff
+
+    yes_bid_eff = max(0.0, min(0.99, yes_bid_eff))
+    yes_ask_eff = max(0.0, min(0.99, yes_ask_eff))
+    no_bid_eff = max(0.0, min(0.99, no_bid_eff))
+    no_ask_eff = max(0.0, min(0.99, no_ask_eff))
+
+    market["yes_bid"] = yes_bid_eff
+    market["yes_ask"] = yes_ask_eff
+    market["no_bid"] = no_bid_eff
+    market["no_ask"] = no_ask_eff
+    market["yes_bid_native"] = yes_bid_native
+    market["yes_ask_native"] = yes_ask_native
+    market["no_bid_native"] = no_bid_native
+    market["no_ask_native"] = no_ask_native
+
     if spread_cents > TUNING.max_spread_cents:
         return None, "bad_spread"
-    if entry_price <= 0 or entry_price >= 0.95:
+    if entry_price <= 0.0 or entry_price >= 0.95:
         return None, "bad_price"
 
     candidate_siblings = sibling_markets or []
