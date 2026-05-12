@@ -96,6 +96,23 @@ class UniverseService:
             markets = [m for m in markets if m.confidence >= min_confidence]
         return markets[:top_n]
 
+    async def get_active_markets(self) -> List[Dict[str, Any]]:
+        """Return raw active markets from Polymarket gateway."""
+        if self._stale():
+            await self.refresh()
+        # Return as dicts to match engine expectations
+        return [
+            {
+                "ticker": m.id,
+                "title": m.title,
+                "category": m.category.value,
+                "type": "single",
+                "legs": 1,
+                "close_time": m.ends_at.isoformat() if m.ends_at else "",
+            }
+            for m in self._cache
+        ]
+
     def size_position(self, market: Market, bankroll: float, legs: int = 1) -> float:
         """Fixed bankroll % sizing. README: 1-leg = 2%, 2-leg = 1%, etc."""
         pct = self.BANKROLL_PCT.get(legs, 0.005)
@@ -128,19 +145,41 @@ class UniverseService:
     # ------------------------------------------------------------------ #
 
     async def _fetch_raw(self) -> List[Dict[str, Any]]:
-        """Placeholder: replace with real Polymarket US API/SDK call."""
+        """Fetch from Polymarket gateway."""
+        import os
+        base = os.getenv("POLYMARKET_GATEWAY_BASE", "https://gateway.polymarket.us/v1")
+        markets = []
+        offset = 0
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{self.api_base}/markets",
-                params={"active": "true", "limit": 200}
-            )
-            resp.raise_for_status()
-            return resp.json().get("data", [])
+            while True:
+                resp = await client.get(
+                    f"{base}/markets",
+                    params={
+                        "limit": 100,
+                        "offset": offset,
+                        "active": "true",
+                        "closed": "false",
+                        "archived": "false",
+                    }
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                if not data:
+                    break
+                markets.extend(data)
+                if len(data) < 100:
+                    break
+                offset += 100
+        return markets
 
     def _score(self, raw: Dict[str, Any]) -> Market:
         """Convert raw API record to scored Market."""
         cat = self._infer_category(raw.get("tags", []), raw.get("title", ""))
         confidence = self._compute_confidence(raw)
+        ends_at_str = raw.get("endDate") or raw.get("closeDate") or "2026-12-31T23:59:59+00:00"
+        if ends_at_str:
+            ends_at_str = ends_at_str.replace("Z", "+00:00")
+        ends_at = datetime.fromisoformat(ends_at_str)
         return Market(
             id=raw.get("id") or raw.get("slug", "unknown"),
             title=raw.get("title", "Untitled"),
@@ -150,9 +189,7 @@ class UniverseService:
             liquidity=raw.get("liquidity", 0),
             spread=raw.get("spread", 0.05),
             volume_24h=raw.get("volume24h", 0),
-            ends_at=datetime.fromisoformat(
-                raw.get("endDate", "2026-12-31").replace("Z", "+00:00")
-            ),
+            ends_at=ends_at,
             url=raw.get("url", ""),
         )
 

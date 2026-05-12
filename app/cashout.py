@@ -13,7 +13,7 @@ class CashoutManager:
 
     async def evaluate_positions(self, positions: List[dict]):
         """Evaluate open positions and optionally execute cashouts."""
-        from app.config import settings
+        from app.strategy import TUNING as settings
 
         if not getattr(settings, "cashout_enabled", True):
             return
@@ -51,7 +51,7 @@ class CashoutManager:
                     "cashout_signal ticker=%s action=%s unrealized_pct=%.2f size=%.4f",
                     ticker, action, unrealized_pct, cashout_size
                 )
-                if getattr(settings, "auto_execute", False):
+                if getattr(settings, "auto_execute", True):
                     await self._submit_sell(str(ticker), side, cashout_size, current_bid)
 
     async def _submit_sell(self, ticker: str, side: str, size: float, price: float):

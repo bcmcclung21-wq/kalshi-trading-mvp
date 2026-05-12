@@ -2,17 +2,21 @@ import os
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 
 from app.strategy import TUNING
+from app.db import SessionLocal
+from app.models import OrderRecord
 
 logger = logging.getLogger("app.engine")
 
 BANKROLL_PCT = {
-    1: 0.02,   # 1 leg = 2.00%
-    2: 0.01,   # 2 legs = 1.00%
-    3: 0.0075, # 3 legs = 0.75%
-    4: 0.0050, # 4 legs = 0.50%
+    1: 0.02,
+    2: 0.01,
+    3: 0.0075,
+    4: 0.0050,
 }
+
 
 @dataclass
 class CandidateBook:
@@ -25,6 +29,7 @@ class CandidateBook:
     category: str
     legs: int = 1
 
+
 @dataclass
 class CandidateModel:
     ticker: str
@@ -36,21 +41,17 @@ class CandidateModel:
     total: float
     side: str = "NA"
 
+
 class TradingEngine:
     def __init__(self, api, universe_service):
         self.api = api
         self.universe = universe_service
-        self.min_edge = 0.02          # 2% minimum edge
-        self.min_confidence = 60.0
-        self.min_projection = 50.0
-        self.max_spread = 0.05        # 5 cents max spread
         self.max_category_exposure = TUNING.max_category_exposure_pct
         self.max_orders_per_cycle = TUNING.max_orders_per_cycle
         from app.cashout import CashoutManager
         self.cashout_manager = CashoutManager(api_client=self.api, db_session=None)
 
     def _calculate_fair(self, book: CandidateBook) -> float:
-        """Midpoint fair value with spread penalty."""
         mid = (book.yes_bid + book.yes_ask) / 2
         spread_penalty = book.spread * 0.1
         return round(mid - spread_penalty, 4)
@@ -63,7 +64,6 @@ class TradingEngine:
         return 0.0
 
     def _calculate_projection(self, edge: float, confidence: float) -> float:
-        """Weighted score: edge * confidence, scaled to 0-100."""
         if edge <= 0:
             return 0.0
         raw = edge * confidence * 100
@@ -76,20 +76,29 @@ class TradingEngine:
         pct = BANKROLL_PCT.get(legs, 0.0050)
         return round(bankroll * pct, 2)
 
+    def _category_confidence(self, category: str) -> float:
+        """Category-specific confidence baseline."""
+        defaults = {
+            "sports": 70.0,
+            "politics": 65.0,
+            "climate": 66.0,
+            "economics": 60.0,
+            "crypto": 60.0,
+        }
+        return defaults.get(category, 66.0)
+
     def score_candidate(self, book: CandidateBook) -> Optional[CandidateModel]:
         fair = self._calculate_fair(book)
+        confidence = self._category_confidence(book.category)
 
-        # Evaluate YES side
         edge_yes = self._calculate_edge(book, fair, "yes")
-        proj_yes = self._calculate_projection(edge_yes, 66.0)
-        total_yes = self._calculate_total(proj_yes, 66.0)
+        proj_yes = self._calculate_projection(edge_yes, confidence)
+        total_yes = self._calculate_total(proj_yes, confidence)
 
-        # Evaluate NO side
         edge_no = self._calculate_edge(book, fair, "no")
-        proj_no = self._calculate_projection(edge_no, 66.0)
-        total_no = self._calculate_total(proj_no, 66.0)
+        proj_no = self._calculate_projection(edge_no, confidence)
+        total_no = self._calculate_total(proj_no, confidence)
 
-        # Pick better side
         if total_yes >= total_no and edge_yes > 0:
             side = "yes"
             edge = edge_yes
@@ -101,7 +110,7 @@ class TradingEngine:
             projection = proj_no
             total = total_no
         else:
-            return None  # No positive edge
+            return None
 
         return CandidateModel(
             ticker=book.ticker,
@@ -109,73 +118,100 @@ class TradingEngine:
             fair=fair,
             edge=edge,
             projection=projection,
-            confidence=66.0,
+            confidence=confidence,
             total=total,
             side=side,
         )
 
     def validate_candidate(self, model: CandidateModel, book: CandidateBook,
-                          current_exposure: Dict[str, float], bankroll: float) -> tuple[bool, str]:
-        # Spread check
-        if book.spread > self.max_spread:
+                          current_exposure: Dict[str, float], bankroll: float,
+                          family_tickers: set) -> tuple[bool, str]:
+        min_edge = TUNING.min_edge_bps / 10000.0
+        min_proj = TUNING.min_projection_score
+        min_conf = TUNING.min_confidence_score
+        max_spread = TUNING.max_spread_cents / 100.0
+
+        if book.spread > max_spread:
             return False, f"spread_too_wide|{book.spread}"
 
-        # Edge check
-        if model.edge < self.min_edge:
+        if model.edge < min_edge:
             return False, f"low_edge|{model.edge}"
 
-        # Projection check
-        if model.projection < self.min_projection:
+        if model.projection < min_proj:
             return False, f"failed_projection|{model.projection}"
 
-        # Confidence check
-        if model.confidence < self.min_confidence:
+        if model.confidence < min_conf:
             return False, f"low_confidence|{model.confidence}"
 
-        # Category exposure check
         cat_exposure = current_exposure.get(book.category, 0.0)
         position_size = self._get_position_size(book.legs, bankroll)
         new_exposure = cat_exposure + position_size
         if new_exposure > bankroll * self.max_category_exposure:
             return False, f"category_exposure|{book.category}|{new_exposure/bankroll:.2%}"
 
-        # Duplicate / family check
-        family_positions = [p for p in current_exposure if p.startswith(model.family)]
-        if len(family_positions) > 0:
+        if model.family in family_tickers:
             return False, f"duplicate_market|{model.family}"
 
         return True, "precheck_ok"
 
+    def _is_same_day_sports(self, market: Dict[str, Any]) -> bool:
+        """Sports markets must close today (UTC)."""
+        if market.get("category") != "sports":
+            return True
+        close_str = market.get("close_time") or market.get("endDate") or ""
+        if not close_str:
+            return False
+        try:
+            close_str = close_str.replace("Z", "+00:00")
+            close_dt = datetime.fromisoformat(close_str)
+            today = datetime.now(timezone.utc).date()
+            return close_dt.date() == today
+        except Exception:
+            return False
+
     async def run_cycle(self) -> Dict[str, Any]:
         logger.info("run_cycle_start")
 
-        # Auth check
         if not await self.api.health_check():
             logger.error("cycle_aborted_auth_failed")
             return {"markets": 0, "candidates": 0, "orders": 0, "rejected": 0, "error": "auth_failed"}
 
-        # Fetch universe
         markets = await self.universe.get_active_markets()
         logger.info("universe_loaded", extra={"count": len(markets)})
 
-        # Filter to singles only
-        singles = [m for m in markets if m.get("type") == "single" and m.get("category") in
-                   ["sports", "politics", "crypto", "climate", "economics"]]
+        # Filter to singles in allowed categories
+        allowed = {"sports", "politics", "crypto", "climate", "economics"}
+        singles = [
+            m for m in markets
+            if m.get("type") == "single" and m.get("category") in allowed
+            and self._is_same_day_sports(m)
+        ]
         logger.info("singles_filtered", extra={"count": len(singles)})
 
-        # Fetch orderbooks
+        # Respect max orderbooks per cycle
+        max_books = TUNING.max_orderbooks_per_cycle
+        singles = singles[:max_books]
+
         books = []
         for m in singles:
             ob = await self.api.get_orderbook(m["ticker"])
             if ob:
                 books.append((m, ob))
 
-        # Normalize and score
-        candidates = []
-        rejected = []
         current_exposure = await self._get_current_exposure()
         balances = await self.api.get_balances()
         bankroll = balances.get("available", 1000.0) if balances else 1000.0
+
+        # Build set of existing family tickers for duplicate check
+        positions = await self.api.get_positions()
+        family_tickers = set()
+        for p in positions:
+            t = p.get("ticker", "")
+            family = t.rsplit("-", 2)[0] if "-" in t else t
+            family_tickers.add(family)
+
+        candidates = []
+        rejected = []
 
         for market, ob in books:
             book = CandidateBook(
@@ -189,7 +225,6 @@ class TradingEngine:
                 legs=market.get("legs", 1),
             )
 
-            # Skip empty / zero liquidity
             if book.yes_bid == 0 and book.yes_ask == 0:
                 rejected.append((book.ticker, "no_snapshot_or_quotes"))
                 continue
@@ -199,33 +234,31 @@ class TradingEngine:
                 rejected.append((book.ticker, "no_positive_edge"))
                 continue
 
-            ok, reason = self.validate_candidate(model, book, current_exposure, bankroll)
+            ok, reason = self.validate_candidate(model, book, current_exposure, bankroll, family_tickers)
             if not ok:
                 rejected.append((book.ticker, reason))
                 continue
 
             candidates.append((model, book))
 
-        # Sort by total score
         candidates.sort(key=lambda x: x[0].total, reverse=True)
 
-        open_positions = await self.api.get_positions()
+        # Cashout evaluation
         if hasattr(self, "cashout_manager") and self.cashout_manager:
             try:
-                await self.cashout_manager.evaluate_positions(open_positions)
+                await self.cashout_manager.evaluate_positions(positions)
             except Exception as e:
                 logger.warning(f"cashout_evaluate_error error={e}")
 
-        # Execute top N (respecting AUTO_EXECUTE)
         orders_placed = []
         for model, book in candidates[:self.max_orders_per_cycle]:
             size = self._get_position_size(book.legs, bankroll)
-            price = book.yes_ask if model.side == "yes" else book.no_ask
-
             if model.side == "yes":
-                result = await self.api.place_buy_order(model.ticker, price, size)
+                price = book.yes_ask
+                result = await self.api.place_buy_order(model.ticker, price, size, outcome="YES")
             else:
-                result = await self.api.place_sell_order(model.ticker, price, size)
+                price = book.no_ask
+                result = await self.api.place_buy_order(model.ticker, price, size, outcome="NO")
 
             if result:
                 orders_placed.append({
@@ -235,10 +268,29 @@ class TradingEngine:
                     "size": size,
                     "dry_run": result.get("dry_run", False),
                 })
-
-        # Cashout / stop-loss check (only if AUTO_EXECUTE=true)
-        if os.getenv("AUTO_EXECUTE", "false").lower() == "true":
-            await self._check_stop_losses(current_exposure)
+                # Persist to DB for Brier tracking
+                if not result.get("dry_run"):
+                    try:
+                        with SessionLocal() as db:
+                            rec = OrderRecord(
+                                ticker=model.ticker,
+                                category=book.category,
+                                side=model.side.upper(),
+                                market_type="single",
+                                legs=book.legs,
+                                count=int(size),
+                                price_cents=int(price * 100),
+                                bankroll_pct=BANKROLL_PCT.get(book.legs, 0.005),
+                                status="pending",
+                                dry_run=False,
+                                estimated_win_probability=model.fair,
+                                calibration_status="ok",
+                            )
+                            db.add(rec)
+                            db.commit()
+                            logger.info("order_persisted", extra={"ticker": model.ticker, "id": rec.id})
+                    except Exception as e:
+                        logger.error("order_persist_failed", extra={"ticker": model.ticker, "error": str(e)})
 
         summary = {
             "markets": len(singles),
@@ -257,16 +309,3 @@ class TradingEngine:
             cat = p.get("category", "unknown")
             exposure[cat] = exposure.get(cat, 0.0) + p.get("size", 0.0) * p.get("avg_price", 0.0)
         return exposure
-
-    async def _check_stop_losses(self, exposure: Dict[str, float]):
-        positions = await self.api.get_positions()
-        for p in positions:
-            unrealized = p.get("unrealized_pnl_pct", 0.0)
-            if unrealized < -0.20:  # 20% stop loss
-                ticker = p.get("ticker")
-                logger.info("stop_loss_triggered", extra={
-                    "ticker": ticker,
-                    "unrealized_pct": unrealized,
-                })
-                # Place closing order
-                await self.api.place_sell_order(ticker, price=p.get("current_price", 0.5), size=p.get("size", 0))
