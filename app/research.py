@@ -1,30 +1,8 @@
-"""Confidence-led, cross-category research scoring.
-
-Replaces the old per-category hardcoded confirmation logic with a single
-unified model that works the same way across sports, politics, crypto,
-climate, and economics. The category becomes a feature bucket the learning
-engine uses to adjust scores based on actual settled-bet performance, NOT
-a hardcoded multiplier that assumes one category is inherently better.
-
-    final_confidence = base_confidence * learned_multiplier
-    final_score      = final_confidence + ev_bonus
-
-base_confidence is built from:
-  - price_quality        (markets near 50/50 are more informative)
-  - liquidity_quality    (volume, open interest, spread)
-  - time_quality         (markets resolving in a useful window)
-  - clarity_quality      (clearly defined resolution criterion)
-
-learned_multiplier starts at 1.0 and adjusts up/down per bucket once
-enough trades have settled.
-
-ev_bonus uses Kelly EV adjusted for spread cost.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import re
 
 from app.classifier import detect_category
 from app.learning import bucket_features, get_learning_engine
@@ -44,6 +22,11 @@ class ResearchEnvelope:
     estimated_win_probability: float = 0.0
     expected_value: float = 0.0
     features: dict[str, str] | None = None
+    fair_probability: float = 0.0
+    edge: float = 0.0
+    projection_supported: bool = False
+    projection_model: str = "generic"
+    ladder_consistency: float = 0.0
 
 
 CLARITY_KEYWORDS: tuple[str, ...] = (
@@ -51,6 +34,33 @@ CLARITY_KEYWORDS: tuple[str, ...] = (
     "cover", "score", "goal", "yes", "no", "exceed", "reach", "hit",
     "elected", "approved", "passed", "exact", "between", "range",
 )
+LADDER_TICKER_RE = re.compile(r"^(tc-temp-[a-z0-9-]+high-\d{4}-\d{2}-\d{2})-", re.IGNORECASE)
+
+
+def group_ladder_markets(markets: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for m in markets:
+        ticker = str(m.get("ticker") or "").lower()
+        event = str(m.get("event_ticker") or "").lower()
+        key = event
+        mt = LADDER_TICKER_RE.match(ticker)
+        if mt:
+            key = mt.group(1)
+        if key and ("temp" in ticker or "range" in ticker or "ladder" in ticker):
+            grouped.setdefault(key, []).append(m)
+    return grouped
+
+
+def infer_band_probability(price_points: list[float]) -> float:
+    vals = [max(0.01, min(0.99, float(v))) for v in price_points if v is not None]
+    if not vals:
+        return 0.5
+    return sum(vals) / len(vals)
+
+
+def compute_side_edge(side: str, entry_price: float, bin_probability: float) -> tuple[float, float]:
+    fair = bin_probability if side == "YES" else (1.0 - bin_probability)
+    return fair, fair - entry_price
 
 
 def price_quality(entry_price: float) -> float:
@@ -100,126 +110,97 @@ def clarity_score(market: dict[str, Any]) -> float:
     return min(100.0, 55.0 + hits * 8.0)
 
 
-def implied_edge(entry_price: float, win_probability: float) -> float:
-    return float(win_probability) - max(0.01, min(0.99, float(entry_price or 0.0)))
-
-
-def kelly_expected_value(entry_price: float, win_probability: float, spread_cents: float) -> float:
-    p = max(0.01, min(0.99, float(entry_price or 0.0)))
-    w = max(0.01, min(0.99, float(win_probability or 0.0)))
-    payoff_if_win = (1.0 / p) - 1.0
-    raw_ev = w * payoff_if_win - (1.0 - w)
-    adjusted_ev = raw_ev - (float(spread_cents or 0.0) / 200.0)
-    if adjusted_ev <= 0:
-        return 0.0
-    return round(min(15.0, adjusted_ev * 30.0), 2)
-
-
-def estimate_win_probability(
-    entry_price: float,
-    base_confidence: float,
-    learning_multiplier: float,
-) -> float:
-    p_market = max(0.01, min(0.99, float(entry_price or 0.0)))
-    confidence_normalized = max(0.0, min(1.0, float(base_confidence or 0.0) / 100.0))
-    centered = (confidence_normalized - 0.5)
-    learned_signal = (learning_multiplier - 1.0)
-    deviation = (centered * 0.20) + (learned_signal * 0.15)
-    estimate = p_market + deviation
-    return max(0.02, min(0.98, estimate))
-
-
 def build_research_envelope(
     market: dict[str, Any],
     entry_price: float,
     spread_cents: float,
     volume: float,
     oi: float,
+    side: str = "YES",
+    sibling_markets: list[dict[str, Any]] | None = None,
     manual_note: dict[str, Any] | None = None,
 ) -> ResearchEnvelope:
     category = detect_category(market)
     minutes_to_close = market.get("minutes_to_close")
-
-    price_q = price_quality(entry_price)
     liq_q = liquidity_quality(volume, oi, spread_cents)
     time_q = time_quality(minutes_to_close)
     clarity_q = clarity_score(market)
-
-    base_confidence = (
-        price_q * 0.25
-        + liq_q * 0.35
-        + time_q * 0.20
-        + clarity_q * 0.20
-    )
-    base_confidence = round(min(100.0, base_confidence), 2)
 
     learning = get_learning_engine().adjustment_for(
         category=category,
         entry_price=entry_price,
         spread_cents=spread_cents,
         minutes_to_close=minutes_to_close,
-        confidence=base_confidence,
+        confidence=50.0,
     )
     learning_multiplier = float(learning.get("multiplier") or 1.0)
 
-    win_prob = estimate_win_probability(entry_price, base_confidence, learning_multiplier)
-    edge = implied_edge(entry_price, win_prob)
-    ev = kelly_expected_value(entry_price, win_prob, spread_cents)
-
-    projection_score = round(min(100.0, base_confidence * learning_multiplier), 2)
-    research_score = liq_q
-    confirmation_score = round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2)
-    confidence_score = round(min(100.0, base_confidence * learning_multiplier), 2)
-
-    features = bucket_features(category, entry_price, spread_cents, minutes_to_close, base_confidence)
-
-    rationale_parts = [
-        f"price_q={price_q}",
-        f"liq_q={liq_q}",
-        f"time_q={time_q}",
-        f"clarity_q={clarity_q}",
-        f"mult={learning_multiplier:.2f}",
-        f"win_p={win_prob:.3f}",
-        f"edge={edge:.3f}",
-    ]
-    if learning.get("trusted"):
-        rationale_parts.append("learned")
-    rationale = " ".join(rationale_parts)
-
+    projection_supported = False
+    projection_model = "unsupported"
+    fair_probability = entry_price
+    edge = 0.0
+    ladder_consistency = 0.0
     tags: list[str] = []
-    if spread_cents > 8:
-        tags.append("wider_spread")
-    if volume < 75:
-        tags.append("lighter_volume")
-    if learning_multiplier >= 1.10:
-        tags.append("favorable_priors")
-    elif learning_multiplier <= 0.90:
-        tags.append("unfavorable_priors")
-    if ev >= 5.0:
-        tags.append("positive_ev")
 
-    if manual_note:
-        projection_score = max(projection_score, float(manual_note.get("projection_score") or 0.0))
-        research_score = max(research_score, float(manual_note.get("research_score") or 0.0))
-        confirmation_score = max(confirmation_score, float(manual_note.get("confirmation_score") or 0.0))
-        confidence_score = max(confidence_score, float(manual_note.get("confidence_score") or 0.0))
-        ev = max(ev, float(manual_note.get("ev_bonus") or 0.0))
-        manual_rationale = str(manual_note.get("rationale") or "").strip()
-        if manual_rationale:
-            rationale = f"{rationale} | manual:{manual_rationale}"
-        tags.extend(list(manual_note.get("tags") or []))
+    if sibling_markets:
+        implied = [float(m.get("entry_price") or m.get("midpoint") or m.get("last_price") or 0.0) for m in sibling_markets]
+        base_probs = [max(0.01, min(0.99, p)) for p in implied if p > 0]
+        if len(base_probs) >= 2:
+            s = sum(base_probs)
+            norm = [p / s for p in base_probs] if s > 0 else []
+            smoothed = []
+            for i, p in enumerate(norm):
+                prev_p = norm[i - 1] if i > 0 else p
+                next_p = norm[i + 1] if i < len(norm) - 1 else p
+                smoothed.append((prev_p + (2 * p) + next_p) / 4.0)
+            target = infer_band_probability(smoothed)
+            fair_probability, edge = compute_side_edge(side, entry_price, target)
+            ladder_consistency = max(0.0, 1.0 - abs(sum(smoothed) - 1.0))
+            projection_supported = True
+            projection_model = "ladder_range"
+
+    if not projection_supported:
+        return ResearchEnvelope(
+            projection_score=0.0,
+            research_score=liq_q,
+            confidence_score=0.0,
+            confirmation_score=round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2),
+            ev_bonus=0.0,
+            rationale="unsupported_projection_model",
+            tags=["unsupported_projection_model"],
+            learning_multiplier=learning_multiplier,
+            learning_components=learning.get("components") or {},
+            estimated_win_probability=0.0,
+            expected_value=0.0,
+            features=bucket_features(category, entry_price, spread_cents, minutes_to_close, 50.0),
+            fair_probability=0.0,
+            edge=0.0,
+            projection_supported=False,
+            projection_model=projection_model,
+            ladder_consistency=0.0,
+        )
+
+    edge_bps = edge * 10000.0
+    projection_score = max(0.0, min(100.0, 50.0 + (edge_bps / 60.0) + (ladder_consistency * 20.0)))
+    confidence_score = max(0.0, min(100.0, (time_q * 0.25) + (clarity_q * 0.25) + (liq_q * 0.30) + (ladder_consistency * 20.0)))
+    ev_bonus = max(0.0, min(15.0, edge_bps / 100.0))
 
     return ResearchEnvelope(
-        projection_score=projection_score,
-        research_score=research_score,
-        confidence_score=confidence_score,
-        confirmation_score=confirmation_score,
-        ev_bonus=round(min(15.0, ev), 2),
-        rationale=rationale,
-        tags=sorted(set(tags)),
+        projection_score=round(projection_score, 2),
+        research_score=liq_q,
+        confidence_score=round(confidence_score, 2),
+        confirmation_score=round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2),
+        ev_bonus=round(ev_bonus, 2),
+        rationale=f"model={projection_model} fair={fair_probability:.4f} edge={edge:.4f} consistency={ladder_consistency:.3f}",
+        tags=tags,
         learning_multiplier=learning_multiplier,
         learning_components=learning.get("components") or {},
-        estimated_win_probability=round(win_prob, 4),
+        estimated_win_probability=round(fair_probability, 4),
         expected_value=round(edge, 4),
-        features=features,
+        features=bucket_features(category, entry_price, spread_cents, minutes_to_close, confidence_score),
+        fair_probability=round(fair_probability, 4),
+        edge=round(edge, 4),
+        projection_supported=True,
+        projection_model=projection_model,
+        ladder_consistency=round(ladder_consistency, 4),
     )

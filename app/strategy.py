@@ -54,9 +54,13 @@ class RuntimeTuning:
     # rather than strict UTC calendar-day equality.
     same_day_only: bool = True
 
-    min_projection_score: float = 50.0
-    min_confidence_score: float = 50.0
-    min_total_score_single: float = 58.0
+    min_projection_score: float = 35.0
+    min_confidence_score: float = 45.0
+    min_total_score_single: float = 52.0
+    min_edge_bps: float = 150.0
+    min_fair_prob_gap: float = 0.015
+    extreme_price_min: float = 0.02
+    extreme_price_max: float = 0.98
     min_total_score_combo: float = 66.0
 
     max_markets_per_sync: int = 1200
@@ -89,9 +93,13 @@ TUNING = RuntimeTuning(
     market_timezone=os.getenv("MARKET_TIMEZONE", "America/New_York"),
     max_settlement_window_hours=_env_int("MAX_SETTLEMENT_WINDOW_HOURS", 36),
     same_day_only=_env_bool("SAME_DAY_ONLY", True),
-    min_projection_score=_env_float("MIN_PROJECTION_SCORE", 50.0),
-    min_confidence_score=_env_float("MIN_CONFIDENCE_SCORE", 50.0),
-    min_total_score_single=_env_float("MIN_TOTAL_SCORE_SINGLE", 58.0),
+    min_projection_score=_env_float("MIN_PROJECTION_SCORE", 35.0),
+    min_confidence_score=_env_float("MIN_CONFIDENCE_SCORE", 45.0),
+    min_total_score_single=_env_float("MIN_TOTAL_SCORE_SINGLE", 52.0),
+    min_edge_bps=_env_float("MIN_EDGE_BPS", 150.0),
+    min_fair_prob_gap=_env_float("MIN_FAIR_PROB_GAP", 0.015),
+    extreme_price_min=_env_float("EXTREME_PRICE_MIN", 0.02),
+    extreme_price_max=_env_float("EXTREME_PRICE_MAX", 0.98),
     min_total_score_combo=_env_float("MIN_TOTAL_SCORE_COMBO", 66.0),
     max_markets_per_sync=_env_int("MAX_MARKETS_PER_SYNC", 1200),
     max_orderbooks_per_cycle=_env_int("MAX_ORDERBOOKS_PER_CYCLE", 24),
