@@ -13,4 +13,3 @@ alembic==1.14.0
 polymarket-us>=0.1.0
 
 requests>=2.28.0
-polymarket-python>=2.0.0
