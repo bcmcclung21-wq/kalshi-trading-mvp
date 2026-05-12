@@ -171,6 +171,39 @@ class TemperatureProjectionModel(BaseProjectionModel):
         return ProjectionResult(0.5, 0.0, 0.0, {"error": code, "ticker": ticker})
 
 
+class FallbackMidpointModel(BaseProjectionModel):
+    @property
+    def supported_families(self) -> list[str]:
+        return ["*"]
+
+    def project(self, ticker, market_data, orderbook) -> ProjectionResult:
+        yes_bid = float((market_data or {}).get("yes_bid") or 0.0)
+        yes_ask = float((market_data or {}).get("yes_ask") or 0.0)
+        no_bid = float((market_data or {}).get("no_bid") or 0.0)
+        no_ask = float((market_data or {}).get("no_ask") or 0.0)
+        if yes_ask <= 0 and no_bid > 0:
+            yes_ask = 1.0 - no_bid
+        if no_ask <= 0 and yes_bid > 0:
+            no_ask = 1.0 - yes_bid
+        has_yes = yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid
+        has_no = no_bid > 0 and no_ask > 0 and no_ask >= no_bid
+        if has_yes:
+            mid = (yes_bid + yes_ask) / 2.0
+            conf = 0.55
+        elif has_no:
+            mid = 1.0 - ((no_bid + no_ask) / 2.0)
+            conf = 0.55
+        else:
+            mid = 0.5
+            conf = 0.3
+        return ProjectionResult(
+            fair_value=max(0.01, min(0.99, mid)),
+            confidence=conf,
+            projection=mid,
+            metadata={"source": "fallback_midpoint", "ticker": ticker},
+        )
+
+
 class ProjectionModelRegistry:
     def __init__(self):
         self._models: Dict[str, BaseProjectionModel] = {}
@@ -180,12 +213,13 @@ class ProjectionModelRegistry:
         m = TemperatureProjectionModel()
         for f in m.supported_families:
             self._models[f] = m
+        self._models["*"] = FallbackMidpointModel()
 
     def get_model(self, ticker: str) -> Optional[BaseProjectionModel]:
         for prefix, model in self._models.items():
-            if ticker.startswith(prefix):
+            if prefix != "*" and ticker.startswith(prefix):
                 return model
-        return None
+        return self._models.get("*")
 
     def project(self, ticker: str, market_data: dict = None, orderbook: dict = None) -> ProjectionResult:
         model = self.get_model(ticker)

@@ -138,10 +138,24 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
     }
     valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
     now = datetime.now(timezone.utc)
-    max_minutes = TUNING.max_settlement_window_hours * 60
     today_market_tz = datetime.now(MARKET_TZ).date()
 
     for market in markets:
+        cat = str(market.get("category") or "unknown").lower()
+        if cat == "sports":
+            max_hours = 72
+        elif cat == "politics":
+            max_hours = 168
+        elif cat == "economics":
+            max_hours = 48
+        elif cat == "crypto":
+            max_hours = 72
+        elif cat == "climate":
+            max_hours = 48
+        else:
+            max_hours = TUNING.max_settlement_window_hours
+        max_minutes = max_hours * 60
+
         if market.get("market_type") != "single":
             rejects["wrong_market_type"] += 1
             continue
@@ -197,18 +211,15 @@ def combo_pool(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def diversified_pool(markets: list[dict[str, Any]], max_total: int, per_category: int) -> list[dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+def diversified_pool(markets, max_total, per_category):
+    grouped = defaultdict(list)
     for market in markets:
         grouped[str(market.get("category") or "unknown")].append(market)
-    out: list[dict[str, Any]] = []
+    out = []
     categories = list(grouped.keys())
-    random.shuffle(categories)
     for category in categories:
         bucket = grouped[category]
-        random.shuffle(bucket)
         out.extend(bucket[:per_category])
-    random.shuffle(out)
     return out[:max_total]
 
 
@@ -411,7 +422,8 @@ def build_candidate(
     )
     if not envelope.projection_supported:
         return None, "unsupported_projection_model"
-    min_edge_bps = TUNING.min_edge_bps
+    cat_edge = (getattr(TUNING, 'category_edge_bps', None) or {}).get(str(market.get("category") or "unknown").lower(), -1)
+    min_edge_bps = cat_edge if cat_edge > 0 else TUNING.min_edge_bps
     fair_gap = abs(float(envelope.fair_probability) - float(entry_price))
     if (entry_price <= TUNING.extreme_price_min or entry_price >= TUNING.extreme_price_max) and (float(envelope.edge) * 10000.0 < min_edge_bps):
         return None, "extreme_price_without_edge"

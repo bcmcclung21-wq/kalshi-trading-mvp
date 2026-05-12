@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 CATEGORIES = ["sports", "politics", "crypto", "climate", "economics"]
 SPORTS = "sports"
@@ -31,9 +31,9 @@ def _env_float(name: str, default: float) -> float:
     return float(str(raw).strip()) if raw not in (None, "") else default
 
 
-@dataclass(frozen=True)
+@dataclass
 class RuntimeTuning:
-    auto_execute: bool = False
+    auto_execute: bool = True
     allow_combos: bool = False
     max_combo_legs: int = 4
     max_orders_per_cycle: int = 3
@@ -57,7 +57,7 @@ class RuntimeTuning:
     min_projection_score: float = 35.0
     min_confidence_score: float = 45.0
     min_total_score_single: float = 52.0
-    min_edge_bps: float = 150.0
+    min_edge_bps: float = 100.0
     min_fair_prob_gap: float = 0.015
     extreme_price_min: float = 0.02
     extreme_price_max: float = 0.98
@@ -73,10 +73,18 @@ class RuntimeTuning:
 
     max_category_exposure_pct: float = 0.30
     max_ticker_reentry_minutes: int = 180
+    max_order_notional_usd: float = 25.0
+    category_edge_bps: dict = field(default_factory=lambda: {
+        "sports": 75,
+        "politics": 100,
+        "economics": 100,
+        "crypto": 100,
+        "climate": 100,
+    })
 
 
 TUNING = RuntimeTuning(
-    auto_execute=_env_bool("AUTO_EXECUTE", False),
+    auto_execute=_env_bool("AUTO_EXECUTE", True),
     allow_combos=_env_bool("ALLOW_COMBOS", False),
     max_combo_legs=_env_int("MAX_COMBO_LEGS", 4),
     max_orders_per_cycle=_env_int("MAX_ORDERS_PER_CYCLE", 3),
@@ -96,7 +104,7 @@ TUNING = RuntimeTuning(
     min_projection_score=_env_float("MIN_PROJECTION_SCORE", 35.0),
     min_confidence_score=_env_float("MIN_CONFIDENCE_SCORE", 45.0),
     min_total_score_single=_env_float("MIN_TOTAL_SCORE_SINGLE", 52.0),
-    min_edge_bps=_env_float("MIN_EDGE_BPS", 150.0),
+    min_edge_bps=_env_float("MIN_EDGE_BPS", 100.0),
     min_fair_prob_gap=_env_float("MIN_FAIR_PROB_GAP", 0.015),
     extreme_price_min=_env_float("EXTREME_PRICE_MIN", 0.02),
     extreme_price_max=_env_float("EXTREME_PRICE_MAX", 0.98),
@@ -110,6 +118,7 @@ TUNING = RuntimeTuning(
     summary_cache_ttl_sec=_env_int("SUMMARY_CACHE_TTL_SEC", 5),
     max_category_exposure_pct=_env_float("MAX_CATEGORY_EXPOSURE_PCT", 0.30),
     max_ticker_reentry_minutes=_env_int("MAX_TICKER_REENTRY_MINUTES", 180),
+    max_order_notional_usd=_env_float("MAX_ORDER_NOTIONAL_USD", 25.0),
 )
 
 

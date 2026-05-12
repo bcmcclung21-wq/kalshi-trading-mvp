@@ -9,6 +9,8 @@ class LiquidityConfig:
     max_slippage: float = 0.05
     min_depth_contracts: float = 10.0
     max_spread: float = 0.20
+    stale_threshold_minutes: int = 120
+    inactive_threshold_minutes: int = 240
 
 
 @dataclass(slots=True)

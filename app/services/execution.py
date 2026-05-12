@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import math
 
 from app.models import OrderRecord
-from app.risk import contract_count
+from app.risk import contract_count, trade_notional
 from app.strategy import TUNING, bankroll_pct
 
 
 async def execute_candidate(exchange, db, candidate, bankroll_usd: float) -> OrderRecord | None:
-    count = contract_count(bankroll_usd=bankroll_usd, legs=candidate.legs, entry_price=candidate.entry_price)
+    notional = trade_notional(bankroll_usd=bankroll_usd, legs=candidate.legs)
+    notional = min(notional, getattr(TUNING, 'max_order_notional_usd', 999999.0))
+    count = max(0, math.floor(notional / candidate.entry_price)) if candidate.entry_price > 0 else 0
     if count <= 0:
         return None
     payload = {"status": "dry_run"}
