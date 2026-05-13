@@ -7,6 +7,7 @@ router = APIRouter()
 # In-memory cache: 5-second TTL to protect from polling
 _cache = {"ts": None, "payload": None}
 
+
 @router.get("/dashboard")
 async def dashboard(request: Request):
     now = datetime.now(timezone.utc)
@@ -17,7 +18,7 @@ async def dashboard(request: Request):
 
     # Pull services from app.state (never import from main)
     universe = getattr(request.app.state, "universe", None)
-    engine   = getattr(request.app.state, "engine", None)
+    engine = getattr(request.app.state, "engine", None)
     settings = getattr(request.app.state, "settings", None)
 
     markets = []
@@ -26,16 +27,26 @@ async def dashboard(request: Request):
         for market in universe._markets[:50]:
             if not hasattr(market, "id"):
                 continue
-            markets.append({
-                "id": market.id,
-                "title": market.title,
-                "category": market.category.value if hasattr(market.category, "value") else str(market.category),
-                "confidence": round(market.confidence, 3),
-                "liquidity": market.liquidity,
-                "spread": round(market.spread, 4),
-                "url": market.url,
-                "active": market.ends_at > cutoff if hasattr(market, "ends_at") else True,
-            })
+            markets.append(
+                {
+                    "id": market.id,
+                    "title": market.title,
+                    "category": (
+                        market.category.value
+                        if hasattr(market.category, "value")
+                        else str(market.category)
+                    ),
+                    "confidence": round(market.confidence, 3),
+                    "liquidity": market.liquidity,
+                    "spread": round(market.spread, 4),
+                    "url": market.url,
+                    "active": (
+                        market.ends_at > cutoff
+                        if hasattr(market, "ends_at")
+                        else True
+                    ),
+                }
+            )
 
     trades = []
     daily_stats = {}
@@ -64,7 +75,7 @@ async def dashboard(request: Request):
         "markets_count": len(markets),
         "trades": trades,
         "daily_stats": daily_stats,
-        "post_mortems": daily_stats.get("post_mortems", []),   # ← THIS IS THE NEW LINE
+        "post_mortems": daily_stats.get("post_mortems", []),
         "balance": None,
         "auto_execute": settings.auto_execute if settings else False,
         "allow_combos": settings.allow_combos if settings else False,
