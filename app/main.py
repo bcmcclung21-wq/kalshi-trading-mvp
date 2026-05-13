@@ -80,13 +80,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.include_router(dashboard.router, prefix="/api", tags=["dashboard"])
+app.include_router(dashboard.router, prefix="/v1", tags=["dashboard"])
 
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
 
-@app.get("/api/health")
+@app.get("/v1/health")
 async def health(request: Request):
     universe = getattr(request.app.state, "universe", None)
     return {
@@ -102,7 +102,7 @@ async def health(request: Request):
         "dry_run": not settings.auto_execute,
     }
 
-@app.post("/api/trigger-cycle")
+@app.post("/v1/trigger-cycle")
 async def trigger_cycle(request: Request):
     engine = getattr(request.app.state, "engine", None)
     if not engine:
