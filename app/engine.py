@@ -79,7 +79,7 @@ class TradingEngine:
             logger.exception("run_cycle_fatal: %s", e)
             return {"status": "error", "error": str(e)}
 
-    async def _run_daily_learning(self):
+        async def _run_daily_learning(self):
         async with self._learning_lock:
             try:
                 trades = await self.api.get_trades(limit=200)
@@ -89,10 +89,14 @@ class TradingEngine:
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             day_trades = [t for t in trades if isinstance(t, dict) and self._parse_time(t) >= yesterday]
 
+            # ─── Build post-mortem audit trail ───
+            post_mortems = []
+
             for trade in day_trades:
                 pnl = trade.get("realized_pnl", 0) or trade.get("pnl", 0) or 0
                 mid = trade.get("market_id") or trade.get("id", "")
                 cat = "unknown"
+                m = None
                 try:
                     m = await self.api.get_market(mid)
                     cat = UniverseService._infer_category(
@@ -101,6 +105,7 @@ class TradingEngine:
                 except Exception:
                     pass
 
+                # Record in tuner (existing logic preserved)
                 TUNER.record_trade_outcome(
                     cat,
                     trade.get("price", 0.5),
@@ -111,6 +116,74 @@ class TradingEngine:
                     {"price": trade.get("price", 0.5), "volume": 0},
                 )
 
+                # ─── Generate per-trade post-mortem ───
+                market_title = trade.get("market_title") or trade.get("title") or mid
+                edge_bps = trade.get("edge_bps", 0)
+                confidence = trade.get("confidence", 0.5)
+                predicted_prob = trade.get("predicted_prob", 0.5)
+                price = trade.get("price", 0.5)
+
+                if pnl > 0:
+                    pm_type = "success"
+                    title = f"Win: {market_title[:45]}"
+                    body = (
+                        f"Closed at <strong>+${pnl:+.2f}</strong>. "
+                        f"Entry edge <code>{edge_bps} bps</code> with confidence <code>{confidence:.2f}</code>. "
+                        f"Predicted <code>{predicted_prob:.2f}</code> vs market <code>{price:.2f}</code>. "
+                        f"Category <code>{cat}</code> performed as expected."
+                    )
+                elif pnl < 0:
+                    pm_type = "fail"
+                    title = f"Loss: {market_title[:45]}"
+                    reasons = []
+                    if edge_bps < 50:
+                        reasons.append("edge below 50 bps")
+                    if confidence < 0.60:
+                        reasons.append("confidence under 0.60")
+                    if m and m.get("liquidity", 99999) < 2000:
+                        reasons.append("liquidity under $2K")
+                    if trade.get("spread", 0) > 0.08:
+                        reasons.append("spread > 8%")
+                    reason_str = "; ".join(reasons) if reasons else "market moved against position"
+                    body = (
+                        f"Closed at <strong>${pnl:+.2f}</strong>. "
+                        f"Predicted <code>{predicted_prob:.2f}</code> but settled opposite. "
+                        f"Likely causes: {reason_str}. "
+                        f"Review if <code>{cat}</code> prior needs recalibration."
+                    )
+                else:
+                    pm_type = "adjust"
+                    title = f"Push: {market_title[:45]}"
+                    body = (
+                        f"Broke even. Edge <code>{edge_bps} bps</code> was likely consumed by "
+                        f"spread or slippage. Consider raising <code>min_edge_bps</code> for similar setups."
+                    )
+
+                post_mortems.append({
+                    "type": pm_type,
+                    "title": title,
+                    "meta": f"PnL ${pnl:+.2f} | {edge_bps} bps | {cat}",
+                    "body": body,
+                })
+
+            # ─── Generate plan & attach post-mortems ───
+            plan = TUNER.get_daily_improvement_plan()
+            self.daily_stats["last_plan"] = plan
+            self.daily_stats["post_mortems"] = post_mortems[-20:]   # keep last 20
+
+            # Rebuild learning priors from DB
+            try:
+                le = get_learning_engine()
+                le.rebuild_priors(lookback_days=30)
+            except Exception as e:
+                logger.warning("daily_learning_rebuild_failed: %s", e)
+
+            logger.info(
+                "daily_learning_complete trades=%d post_mortems=%d plan_adjustments=%d",
+                len(day_trades),
+                len(post_mortems),
+                len(plan.get("adjustments", [])),
+            )
             # FIX #2 & #3: Generate plan AND apply it
             plan = TUNER.get_daily_improvement_plan()
             self.daily_stats["last_plan"] = plan
