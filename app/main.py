@@ -50,7 +50,11 @@ async def lifespan(app: FastAPI):
     calibration = CalibrationService()
     engine = TradingEngine(api, universe, calibration)
     cashout = CashoutManager(api)
+
+    # CRITICAL: expose to routers via request.app.state
+    app.state.api = api
     app.state.universe = universe
+    app.state.calibration = calibration
     app.state.engine = engine
     app.state.cashout = cashout
     app.state.settings = settings

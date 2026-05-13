@@ -3,23 +3,19 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 
 router = APIRouter()
-_cache = {"ts": None, "payload": None}
 
 @router.get("/dashboard")
 async def dashboard(request: Request):
-    now = datetime.now(timezone.utc)
-    if _cache["ts"] and (now - _cache["ts"]).total_seconds() < 5:
-        return _cache["payload"]
+    # Pull from app state instead of importing from main
     universe = getattr(request.app.state, "universe", None)
-    engine = getattr(request.app.state, "engine", None)
+    engine   = getattr(request.app.state, "engine", None)
+    cashout  = getattr(request.app.state, "cashout", None)
     settings = getattr(request.app.state, "settings", None)
-    from app.strategy import TUNER
 
     markets = []
     if universe is not None and hasattr(universe, "_markets"):
-        raw = universe._markets
-        items = raw if isinstance(raw, list) else []
-        for market in items[:50]:
+        now = datetime.now(timezone.utc)
+        for market in universe._markets[:50]:
             if not hasattr(market, "id"):
                 continue
             markets.append({
@@ -44,16 +40,18 @@ async def dashboard(request: Request):
         daily_stats = engine.daily_stats
         brier_score = daily_stats.get("brier_score", 0.0)
         win_rate = daily_stats.get("win_rate", 0.0)
-        if "last_trades" in daily_stats:
-            trades = daily_stats["last_trades"][:20]
+        trades = daily_stats.get("last_trades", [])[:20]
         last_plan = daily_stats.get("last_plan", {})
 
-    if TUNER is not None:
+    try:
+        from app.strategy import TUNER
         learning_state = TUNER.learning.to_dict()
+    except Exception:
+        pass
 
-    payload = {
+    return {
         "status": "ok",
-        "timestamp": now.isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "markets": markets,
         "markets_count": len(markets),
         "trades": trades,
@@ -66,6 +64,3 @@ async def dashboard(request: Request):
         "learning": learning_state,
         "last_plan": last_plan,
     }
-    _cache["ts"] = now
-    _cache["payload"] = payload
-    return payload

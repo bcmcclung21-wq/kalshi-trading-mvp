@@ -102,9 +102,11 @@ class UniverseService:
 
         spread = 0.05
         market_price = 0.5
+        best_bid = float(raw.get("bestBid", 0))
+        best_ask = float(raw.get("bestAsk", 1))
         try:
-            bid = float(raw.get("bestBid", 0))
-            ask = float(raw.get("bestAsk", 1))
+            bid = best_bid
+            ask = best_ask
             last = raw.get("lastPrice")
             if isinstance(last, (int, float, str)):
                 market_price = float(last)
@@ -130,6 +132,8 @@ class UniverseService:
             market_price=max(0.0, min(1.0, market_price)),
             ends_at=ends_at,
             url=url,
+            best_bid=best_bid,
+            best_ask=best_ask,
         )
 
     @staticmethod
