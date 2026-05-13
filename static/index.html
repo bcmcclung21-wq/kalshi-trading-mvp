@@ -791,8 +791,11 @@ function renderAudit(data) {
   const plan = data.last_plan || {};
   const timeline = $('#audit-timeline');
 
-  /* Build synthetic audit from available data */
-  const items = [];
+    /* Use real post-mortems if backend sent them, else synthetic */
+  const items = data.post_mortems && data.post_mortems.length ? data.post_mortems : [];
+  
+  // Only run synthetic fallback if no real data
+  if (!items.length) {
 
   // 1. Calibration check
   const brier = data.brier_score || ds.brier_score || 0;
