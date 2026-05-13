@@ -145,31 +145,49 @@ class UniverseService:
     # ------------------------------------------------------------------ #
 
     async def _fetch_raw(self) -> List[Dict[str, Any]]:
-        """Fetch from Polymarket gateway."""
+        """Fetch active markets from Polymarket gateway."""
         import os
+        import logging
+
+        logger = logging.getLogger(__name__)
         base = os.getenv("POLYMARKET_GATEWAY_BASE", "https://gateway.polymarket.us/v1")
+        base = base.rstrip("/")
+        url = f"{base}/markets"
+        logger.info("universe_fetch_start", extra={"url": url, "base": base})
         markets = []
         offset = 0
         async with httpx.AsyncClient(timeout=30) as client:
             while True:
-                resp = await client.get(
-                    f"{base}/markets",
-                    params={
-                        "limit": 100,
-                        "offset": offset,
-                        "active": "true",
-                        "closed": "false",
-                        "archived": "false",
-                    }
-                )
-                resp.raise_for_status()
-                data = resp.json().get("data", [])
-                if not data:
-                    break
-                markets.extend(data)
-                if len(data) < 100:
-                    break
-                offset += 100
+                try:
+                    resp = await client.get(
+                        url,
+                        params={
+                            "limit": 100,
+                            "offset": offset,
+                            "active": "true",
+                            "closed": "false",
+                            "archived": "false",
+                        }
+                    )
+                    logger.info("universe_fetch_response", extra={
+                        "status": resp.status_code,
+                        "url": str(resp.request.url),
+                    })
+                    resp.raise_for_status()
+                    data = resp.json().get("data", [])
+                    if not data:
+                        break
+                    markets.extend(data)
+                    if len(data) < 100:
+                        break
+                    offset += 100
+                except httpx.HTTPStatusError as e:
+                    logger.error("universe_fetch_http_error", extra={
+                        "status": e.response.status_code,
+                        "url": str(e.request.url),
+                    })
+                    raise
+        logger.info("universe_fetch_complete", extra={"count": len(markets)})
         return markets
 
     def _score(self, raw: Dict[str, Any]) -> Market:
