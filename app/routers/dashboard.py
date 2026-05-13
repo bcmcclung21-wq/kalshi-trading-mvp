@@ -4,18 +4,20 @@ from fastapi import APIRouter, Request
 
 router = APIRouter()
 
+# In-memory cache: 5-second TTL to protect from polling
 _cache = {"ts": None, "payload": None}
 
 @router.get("/dashboard")
 async def dashboard(request: Request):
     now = datetime.now(timezone.utc)
+
+    # Return cached payload if fresh
     if _cache["ts"] and (now - _cache["ts"]).total_seconds() < 5:
         return _cache["payload"]
 
-    # Pull from app state instead of importing from main
+    # Pull services from app.state (never import from main)
     universe = getattr(request.app.state, "universe", None)
     engine   = getattr(request.app.state, "engine", None)
-    cashout  = getattr(request.app.state, "cashout", None)
     settings = getattr(request.app.state, "settings", None)
 
     markets = []
@@ -62,6 +64,7 @@ async def dashboard(request: Request):
         "markets_count": len(markets),
         "trades": trades,
         "daily_stats": daily_stats,
+        "post_mortems": daily_stats.get("post_mortems", []),   # ← THIS IS THE NEW LINE
         "balance": None,
         "auto_execute": settings.auto_execute if settings else False,
         "allow_combos": settings.allow_combos if settings else False,
