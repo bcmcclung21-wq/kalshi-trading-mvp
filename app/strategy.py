@@ -5,7 +5,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from app.config import settings
+
 logger = logging.getLogger("app.strategy")
+SPORTS = "sports"
+
+def bankroll_pct(legs: int) -> float:
+    if legs == 1: return 0.02
+    if legs == 2: return 0.01
+    if legs == 3: return 0.0075
+    if legs == 4: return 0.005
+    return 0.005
 
 def _env_bool(name: str, default: bool) -> bool:
     v = os.getenv(name)
@@ -94,7 +104,7 @@ MAX_POSITIONS = _env_int("MAX_POSITIONS", 10)
 MAX_DAILY_TRADES = _env_int("MAX_DAILY_TRADES", 5)
 MAX_RISK_PER_TRADE_USD = _env_float("MAX_RISK_PER_TRADE_USD", 50.0)
 MAX_DAILY_LOSS_USD = _env_float("MAX_DAILY_LOSS_USD", 200.0)
-AUTO_EXECUTE = _env_bool("AUTO_EXECUTE", True)
+AUTO_EXECUTE = _env_bool("AUTO_EXECUTE", False)
 DRY_RUN = _env_bool("DRY_RUN", False)
 CASHOUT_ENABLED = _env_bool("CASHOUT_ENABLED", True)
 CASHOUT_STOP_LOSS_PCT = _env_float("CASHOUT_STOP_LOSS_PCT", -15.0)
@@ -133,6 +143,32 @@ class _TuningProxy:
     def max_risk_per_trade_usd(self): return get_adjusted_thresholds()["max_risk_per_trade_usd"]
     @property
     def max_daily_loss_usd(self): return get_adjusted_thresholds()["max_daily_loss_usd"]
+    @property
+    def same_day_only(self): return settings.same_day_only
+    @property
+    def sports_same_day_only(self): return settings.sports_same_day_only
+    @property
+    def market_timezone(self): return settings.market_timezone
+    @property
+    def min_minutes_to_close(self): return settings.min_minutes_to_close
+    @property
+    def max_settlement_window_hours(self): return settings.max_settlement_window_hours
+    @property
+    def max_spread_cents(self): return settings.max_spread_cents
+    @property
+    def min_projection_score(self): return settings.min_projection_score
+    @property
+    def min_confidence_score(self): return settings.min_confidence_score
+    @property
+    def extreme_price_min(self): return settings.extreme_price_min
+    @property
+    def extreme_price_max(self): return settings.extreme_price_max
+    @property
+    def max_combo_legs(self): return settings.max_combo_legs
+    @property
+    def category_edge_bps(self): return settings.category_edge_bps
+    @property
+    def max_category_exposure_pct(self): return 1.0
     auto_execute = AUTO_EXECUTE; dry_run = DRY_RUN; cashout_enabled = CASHOUT_ENABLED
     cashout_stop_loss_pct = CASHOUT_STOP_LOSS_PCT; cashout_tp1_pct = CASHOUT_TP1_PCT
     cashout_tp1_size_pct = CASHOUT_TP1_SIZE_PCT; brier_threshold = BRIER_THRESHOLD

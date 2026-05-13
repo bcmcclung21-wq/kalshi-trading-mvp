@@ -16,6 +16,18 @@ from app.strategy import SPORTS, TUNING
 
 logger = logging.getLogger(__name__)
 
+def _parse_iso(value):
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
 MARKET_TZ = ZoneInfo(TUNING.market_timezone)
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _LADDER_ROOT_RE = re.compile(r"^(tc-temp-[a-z0-9-]+high-\d{4}-\d{2}-\d{2})-", re.IGNORECASE)

@@ -18,6 +18,7 @@ class Category(str, Enum):
     SPORTS = "sports"
     POLITICS = "politics"
     CRYPTO = "crypto"
+    CLIMATE = "climate"
     ECONOMY = "economy"
     TECH = "tech"
     OTHER = "other"
