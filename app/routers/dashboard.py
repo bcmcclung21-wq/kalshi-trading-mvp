@@ -40,6 +40,9 @@ async def dashboard(request: Request):
     daily_stats = {}
     if engine is not None and hasattr(engine, "daily_stats"):
         daily_stats = engine.daily_stats
+        # Expose recent executed trades from daily_stats if available
+        if "last_trades" in daily_stats:
+            trades = daily_stats["last_trades"][:20]
 
     return {
         "status": "ok",
