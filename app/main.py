@@ -181,9 +181,20 @@ async def dashboard():
     positions = await api.get_positions()
     balances = await api.get_balances()
 
-    realized_pnl = sum(p.get("realized_pnl", 0) for p in positions) if positions else 0.0
-    wins = sum(1 for p in positions if p.get("realized_pnl", 0) > 0)
-    losses = sum(1 for p in positions if p.get("realized_pnl", 0) <= 0)
+    realized_pnl = 0.0
+    wins = 0
+    losses = 0
+    if positions and isinstance(positions, list):
+        for p in positions:
+            if isinstance(p, dict):
+                pnl = p.get("realized_pnl", 0) or 0
+                realized_pnl += pnl
+                if pnl > 0:
+                    wins += 1
+                else:
+                    losses += 1
+            else:
+                logger.warning("dashboard_malformed_position", extra={"position": p})
 
     return {
         "markets": _last_cycle_result.get("markets", 0),
