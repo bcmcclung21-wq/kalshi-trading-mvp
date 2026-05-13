@@ -1,13 +1,23 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Poly Trading MVP</title>
     <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-    <div id="app">
+    <div class="container">
         <h1>Poly Trading MVP</h1>
-        <p>Loading dashboard...</p>
+        <div id="status" class="status">Loading...</div>
+        <div class="controls">
+            <button id="btn-auto">Auto Execute</button>
+            <button id="btn-combos">Allow Combos</button>
+        </div>
+        <h2>Markets</h2>
+        <div id="markets" class="markets">Loading markets...</div>
+        <h2>Trades</h2>
+        <div id="trades" class="trades">Loading trades...</div>
     </div>
     <script src="/static/app.js"></script>
 </body>
