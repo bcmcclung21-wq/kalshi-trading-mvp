@@ -36,3 +36,4 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```bash
 PYTHONPATH=. pytest
 ```
+# deploy trigger 2026-05-13T20:36:40Z
