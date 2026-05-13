@@ -145,12 +145,12 @@ class UniverseService:
     # ------------------------------------------------------------------ #
 
     async def _fetch_raw(self) -> List[Dict[str, Any]]:
-        """Fetch active markets from Polymarket gateway."""
+        """Fetch active markets from Polymarket Gamma API."""
         import os
         import logging
 
         logger = logging.getLogger(__name__)
-        base = os.getenv("POLYMARKET_GATEWAY_BASE", "https://gateway.polymarket.us/v1")
+        base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
         base = base.rstrip("/")
         url = f"{base}/markets"
         logger.info("universe_fetch_start", extra={"url": url, "base": base})
@@ -164,17 +164,15 @@ class UniverseService:
                         params={
                             "limit": 100,
                             "offset": offset,
-                            "active": "true",
                             "closed": "false",
-                            "archived": "false",
-                        }
+                        },
                     )
                     logger.info("universe_fetch_response", extra={
                         "status": resp.status_code,
                         "url": str(resp.request.url),
                     })
                     resp.raise_for_status()
-                    data = resp.json().get("data", [])
+                    data = resp.json()
                     if not data:
                         break
                     markets.extend(data)
@@ -192,7 +190,7 @@ class UniverseService:
 
     def _score(self, raw: Dict[str, Any]) -> Market:
         """Convert raw API record to scored Market."""
-        cat = self._infer_category(raw.get("tags", []), raw.get("title", ""))
+        cat = self._infer_category(raw.get("tags", []), raw.get("question", ""))
         confidence = self._compute_confidence(raw)
         ends_at_str = raw.get("endDate") or raw.get("closeDate") or "2026-12-31T23:59:59+00:00"
         if ends_at_str:
@@ -200,13 +198,13 @@ class UniverseService:
         ends_at = datetime.fromisoformat(ends_at_str)
         return Market(
             id=raw.get("id") or raw.get("slug", "unknown"),
-            title=raw.get("title", "Untitled"),
+            title=raw.get("question", "Untitled"),
             category=cat,
             confidence=confidence,
             ev=raw.get("expected_value"),
-            liquidity=raw.get("liquidity", 0),
-            spread=raw.get("spread", 0.05),
-            volume_24h=raw.get("volume24h", 0),
+            liquidity=float(raw.get("liquidity", 0) or 0),
+            spread=float(raw.get("spread", 0.05) or 0.05),
+            volume_24h=float(raw.get("volume24h", 0) or 0),
             ends_at=ends_at,
             url=raw.get("url", ""),
         )
@@ -230,8 +228,15 @@ class UniverseService:
         return datetime.utcnow() - self._last_fetch > timedelta(minutes=5)
 
     @staticmethod
-    def _infer_category(tags: List[str], title: str) -> Category:
-        text = " ".join(tags + [title]).lower()
+    def _infer_category(tags: List[Any], question: str) -> Category:
+        tag_labels = []
+        for t in tags:
+            if isinstance(t, dict):
+                tag_labels.append(t.get("label", ""))
+            else:
+                tag_labels.append(str(t))
+
+        text = " ".join(tag_labels + [question]).lower()
         if any(k in text for k in ("sport", "nba", "nfl", "soccer", "baseball")):
             return Category.SPORTS
         if any(k in text for k in ("election", "president", "senate", "vote", "poll")):
