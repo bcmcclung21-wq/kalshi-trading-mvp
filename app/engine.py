@@ -180,6 +180,13 @@ class TradingEngine:
                     "total_score": round(total_score, 2),
                     "edge_bps": edge_bps,
                     "fair_prob": fair_prob,
+                    # Inside _score_candidates loop, after computing total_score:
+    from datetime import timezone
+            if hasattr(m, "ends_at") and m.ends_at:
+               minutes_to_close = (m.ends_at - datetime.now(timezone.utc)).total_seconds() / 60
+            if 5 < minutes_to_close < 60 and confidence > 0.85:
+               total_score += 15  # Near resolution bonus
+               edge_bps += 25
                 })
 
         candidates.sort(key=lambda x: x["total_score"], reverse=True)
