@@ -633,7 +633,7 @@ function renderSparkline(id, values, colorClass='green') {
 /* ─── Fetch ─── */
 async function fetchDashboard() {
   try {
-    const res = await fetch('/dashboard');
+    const res = await fetch('/dash');
     if(!res.ok) throw new Error('HTTP '+res.status);
     const data = await res.json();
     if(pollMs > 10000) { pollMs = 10000; startRefresh(); }
@@ -967,7 +967,7 @@ async function toggleCombos() {
 async function triggerCycle() {
   toast('Triggering cycle…', 'info');
   try {
-    const res = await fetch('/trigger-cycle', {method:'POST'});
+    const res = await fetch('/cycle', {method:'POST'});
     const data = await res.json();
     toast('Cycle complete: '+JSON.stringify(data).slice(0,80), data.status==='ok'?'success':'warn');
     fetchDashboard();

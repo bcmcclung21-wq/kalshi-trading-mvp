@@ -86,7 +86,7 @@ app.include_router(dashboard.router, tags=["dashboard"])
 async def root():
     return FileResponse("static/index.html")
 
-@app.get("/health")
+@app.get("/healthz")
 async def health(request: Request):
     universe = getattr(request.app.state, "universe", None)
     return {
@@ -102,7 +102,7 @@ async def health(request: Request):
         "dry_run": not settings.auto_execute,
     }
 
-@app.post("/trigger-cycle")
+@app.post("/cycle")
 async def trigger_cycle(request: Request):
     engine = getattr(request.app.state, "engine", None)
     if not engine:

@@ -9,7 +9,7 @@ router = APIRouter()
 _cache = {"ts": None, "payload": None}
 
 
-@router.get("/dashboard")
+@router.get("/dash")
 async def dashboard(request: Request):
     now = datetime.now(timezone.utc)
 
