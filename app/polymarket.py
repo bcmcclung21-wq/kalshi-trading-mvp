@@ -1,5 +1,6 @@
 """Polymarket API wrapper using direct HTTP calls (no deprecated SDK)."""
 from __future__ import annotations
+import asyncio
 import logging, os
 import httpx
 
@@ -49,12 +50,37 @@ class PolymarketAPI:
             r.raise_for_status()
             return r.json()
 
+    async def fetch_with_retry(self, url: str, params: dict | None = None, retries: int = 3):
+        last_error = None
+        for i in range(retries):
+            try:
+                async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+                    r = await c.get(url, params=params)
+                    r.raise_for_status()
+                    return r.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    raise
+                last_error = e
+            except httpx.HTTPError as e:
+                last_error = e
+            await asyncio.sleep(2 ** i)
+        if last_error:
+            raise last_error
+        return None
+
     async def get_positions(self, limit=100):
-        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.get(f"{self.data_base}/v1/portfolio/positions", params={"limit": limit})
-            r.raise_for_status()
-            d = r.json()
-            return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+        primary_url = f"{self.data_base}/positions"
+        fallback_url = f"{self.gamma_base}/positions"
+
+        try:
+            d = await self.fetch_with_retry(primary_url, params={"limit": limit})
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 404:
+                raise
+            d = await self.fetch_with_retry(fallback_url, params={"limit": limit})
+
+        return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
 
     async def get_trades(self, limit=100):
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
