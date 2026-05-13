@@ -1,3 +1,5 @@
+import logging
+logging.basicConfig(level=logging.WARNING, format="%(name)s %(levelname)s %(message)s")
 from __future__ import annotations
 import asyncio
 import logging
