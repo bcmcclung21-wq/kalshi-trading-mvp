@@ -2,3 +2,16 @@ body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; 
 h1 { color: #60a5fa; }
 .card { background: #1e293b; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; }
 .error { color: #ef4444; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 10px 0; }
+.stat-box { background: #1e293b; padding: 10px; border-radius: 6px; text-align: center; }
+.stat-box label { display: block; font-size: 11px; color: #94a3b8; text-transform: uppercase; }
+.stat-box value { display: block; font-size: 20px; font-weight: bold; color: #38bdf8; margin-top: 4px; }
+.plan-box, .focus-box { background: #1e293b; padding: 12px; border-radius: 6px; margin-top: 10px; font-size: 13px; }
+.plan-box h4, .focus-box h4 { margin: 0 0 8px 0; color: #fbbf24; }
+.trade-row { padding: 8px; border-bottom: 1px solid #334155; font-size: 13px; }
+.trade-row.executed { border-left: 3px solid #22c55e; }
+.trade-row.dry_run { border-left: 3px solid #f59e0b; }
+.trade-row.failed { border-left: 3px solid #ef4444; }
+.market-card { background: #1e293b; padding: 12px; margin-bottom: 8px; border-radius: 6px; }
+.market-card .tag { display: inline-block; background: #334155; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; }
+.market-card .meta { display: block; color: #94a3b8; font-size: 12px; margin-top: 4px; }
