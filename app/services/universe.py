@@ -32,38 +32,58 @@ class UniverseService:
             active = [m for m in scored if m.ends_at > now and m.liquidity > 500 and m.spread < 0.10]
             self._markets = active
             self._last_refresh = now
-            logger.info("universe_refresh_complete", extra={"raw_count": len(raw), "active_count": len(active)})
+            logger.warning("universe_refresh_complete raw=%d active=%d", len(raw), len(active))
             return active
 
     async def _fetch_raw(self):
         url = f"{self.gamma_base}/markets"
         markets, offset, limit = [], 0, 100
+        headers = {"User-Agent": "PolyTradingMVP/1.0"}
         async with httpx.AsyncClient(timeout=30) as client:
             while len(markets) < self.max_markets:
                 try:
-                    resp = await client.get(url, params={"limit": limit, "offset": offset, "closed": "false"})
+                    resp = await client.get(
+                        url,
+                        headers=headers,
+                        params={"limit": limit, "offset": offset, "closed": "false", "active": "true"}
+                    )
                     resp.raise_for_status()
-                    data = resp.json()
-                    if not data or not isinstance(data, list):
+                    payload = resp.json()
+
+                    # FIX: handle both raw list and wrapped dict responses
+                    if isinstance(payload, list):
+                        data = payload
+                    elif isinstance(payload, dict):
+                        data = payload.get("markets") or payload.get("data") or payload.get("results") or []
+                    else:
+                        logger.warning("unexpected_api_response_type type=%s", type(payload).__name__)
                         break
+
+                    if not data:
+                        break
+
                     markets.extend(data)
                     if len(data) < limit:
                         break
                     offset += limit
                     await asyncio.sleep(0.15)
+
                 except httpx.HTTPStatusError as e:
+                    logger.warning("api_http_error status=%d", e.response.status_code)
                     if e.response.status_code == 429:
                         return markets
                     raise
-                except Exception:
+                except Exception as e:
+                    logger.warning("api_fetch_error: %s", e)
                     return markets
+
+        logger.warning("fetch_raw_complete count=%d", len(markets))
         return markets
 
     def _score(self, raw):
         cat = self._infer_category(raw.get("tags", []), raw.get("question", ""))
         confidence = self._compute_confidence(raw)
 
-        # FIX: always produce timezone-aware ends_at
         ends_at_str = (raw.get("endDate") or "2026-12-31T23:59:59Z").replace("Z", "+00:00")
         try:
             ends_at = datetime.fromisoformat(ends_at_str)
