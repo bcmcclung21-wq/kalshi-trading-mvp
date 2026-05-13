@@ -10,6 +10,7 @@ from app.learning import get_learning_engine
 
 logger = logging.getLogger("app.engine")
 
+
 class TradingEngine:
     def __init__(self, api, universe, calibration):
         self.api = api
@@ -32,16 +33,19 @@ class TradingEngine:
             if today != self.daily_stats["last_reset"]:
                 await self._run_daily_learning()
                 self.daily_stats = {
-                    "trades_today": 0, "daily_pnl": 0.0,
-                    "last_reset": today, "last_trades": [],
-                    "last_plan": {}, "brier_score": 0.0, "win_rate": 0.0,
+                    "trades_today": 0,
+                    "daily_pnl": 0.0,
+                    "last_reset": today,
+                    "last_trades": [],
+                    "last_plan": {},
+                    "brier_score": 0.0,
+                    "win_rate": 0.0,
                 }
 
             markets = await self.universe.get_active_markets()
             if not markets:
                 return {"status": "no_markets", "trades": 0}
 
-            # UPDATE BRIER — FIX #1
             brier = self.calibration.brier_score()
             TUNER.update_brier(brier)
             self.daily_stats["brier_score"] = round(brier, 4)
@@ -53,20 +57,31 @@ class TradingEngine:
 
             candidates = self._score_candidates(markets, thresholds)
             if not candidates:
-                return {"status": "no_candidates", "trades": 0, "markets_scanned": len(markets)}
+                return {
+                    "status": "no_candidates",
+                    "trades": 0,
+                    "markets_scanned": len(markets),
+                }
 
             selected = self._select_trades(candidates, thresholds)
             if not selected:
-                return {"status": "no_selected", "trades": 0, "candidates": len(candidates)}
+                return {
+                    "status": "no_selected",
+                    "trades": 0,
+                    "candidates": len(candidates),
+                }
 
             executed = await self._execute_trades(selected, thresholds)
             for t in executed:
-                self.calibration.record_trade(t["market_id"], t["predicted_prob"], t["side"])
+                self.calibration.record_trade(
+                    t["market_id"], t["predicted_prob"], t["side"]
+                )
 
-            # Update daily stats with trades
             self.daily_stats["last_trades"] = executed[-10:]
             self.daily_stats["win_rate"] = round(
-                TUNER.learning.winning_trades / max(1, TUNER.learning.total_trades), 4
+                TUNER.learning.winning_trades
+                / max(1, TUNER.learning.total_trades),
+                4,
             )
 
             return {
@@ -79,7 +94,7 @@ class TradingEngine:
             logger.exception("run_cycle_fatal: %s", e)
             return {"status": "error", "error": str(e)}
 
-        async def _run_daily_learning(self):
+    async def _run_daily_learning(self):
         async with self._learning_lock:
             try:
                 trades = await self.api.get_trades(limit=200)
@@ -87,13 +102,20 @@ class TradingEngine:
                 trades = []
 
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
-            day_trades = [t for t in trades if isinstance(t, dict) and self._parse_time(t) >= yesterday]
+            day_trades = [
+                t
+                for t in trades
+                if isinstance(t, dict) and self._parse_time(t) >= yesterday
+            ]
 
-            # ─── Build post-mortem audit trail ───
             post_mortems = []
 
             for trade in day_trades:
-                pnl = trade.get("realized_pnl", 0) or trade.get("pnl", 0) or 0
+                pnl = (
+                    trade.get("realized_pnl", 0)
+                    or trade.get("pnl", 0)
+                    or 0
+                )
                 mid = trade.get("market_id") or trade.get("id", "")
                 cat = "unknown"
                 m = None
@@ -105,7 +127,6 @@ class TradingEngine:
                 except Exception:
                     pass
 
-                # Record in tuner (existing logic preserved)
                 TUNER.record_trade_outcome(
                     cat,
                     trade.get("price", 0.5),
@@ -116,8 +137,11 @@ class TradingEngine:
                     {"price": trade.get("price", 0.5), "volume": 0},
                 )
 
-                # ─── Generate per-trade post-mortem ───
-                market_title = trade.get("market_title") or trade.get("title") or mid
+                market_title = (
+                    trade.get("market_title")
+                    or trade.get("title")
+                    or mid
+                )
                 edge_bps = trade.get("edge_bps", 0)
                 confidence = trade.get("confidence", 0.5)
                 predicted_prob = trade.get("predicted_prob", 0.5)
@@ -127,10 +151,10 @@ class TradingEngine:
                     pm_type = "success"
                     title = f"Win: {market_title[:45]}"
                     body = (
-                        f"Closed at <strong>+${pnl:+.2f}</strong>. "
-                        f"Entry edge <code>{edge_bps} bps</code> with confidence <code>{confidence:.2f}</code>. "
-                        f"Predicted <code>{predicted_prob:.2f}</code> vs market <code>{price:.2f}</code>. "
-                        f"Category <code>{cat}</code> performed as expected."
+                        f"Closed at +${pnl:+.2f}. "
+                        f"Entry edge {edge_bps} bps with confidence {confidence:.2f}. "
+                        f"Predicted {predicted_prob:.2f} vs market {price:.2f}. "
+                        f"Category {cat} performed as expected."
                     )
                 elif pnl < 0:
                     pm_type = "fail"
@@ -144,34 +168,38 @@ class TradingEngine:
                         reasons.append("liquidity under $2K")
                     if trade.get("spread", 0) > 0.08:
                         reasons.append("spread > 8%")
-                    reason_str = "; ".join(reasons) if reasons else "market moved against position"
+                    reason_str = (
+                        "; ".join(reasons)
+                        if reasons
+                        else "market moved against position"
+                    )
                     body = (
-                        f"Closed at <strong>${pnl:+.2f}</strong>. "
-                        f"Predicted <code>{predicted_prob:.2f}</code> but settled opposite. "
+                        f"Closed at ${pnl:+.2f}. "
+                        f"Predicted {predicted_prob:.2f} but settled opposite. "
                         f"Likely causes: {reason_str}. "
-                        f"Review if <code>{cat}</code> prior needs recalibration."
+                        f"Review if {cat} prior needs recalibration."
                     )
                 else:
                     pm_type = "adjust"
                     title = f"Push: {market_title[:45]}"
                     body = (
-                        f"Broke even. Edge <code>{edge_bps} bps</code> was likely consumed by "
-                        f"spread or slippage. Consider raising <code>min_edge_bps</code> for similar setups."
+                        f"Broke even. Edge {edge_bps} bps was likely consumed by "
+                        f"spread or slippage. Consider raising min_edge_bps for similar setups."
                     )
 
-                post_mortems.append({
-                    "type": pm_type,
-                    "title": title,
-                    "meta": f"PnL ${pnl:+.2f} | {edge_bps} bps | {cat}",
-                    "body": body,
-                })
+                post_mortems.append(
+                    {
+                        "type": pm_type,
+                        "title": title,
+                        "meta": f"PnL ${pnl:+.2f} | {edge_bps} bps | {cat}",
+                        "body": body,
+                    }
+                )
 
-            # ─── Generate plan & attach post-mortems ───
             plan = TUNER.get_daily_improvement_plan()
             self.daily_stats["last_plan"] = plan
-            self.daily_stats["post_mortems"] = post_mortems[-20:]   # keep last 20
+            self.daily_stats["post_mortems"] = post_mortems[-20:]
 
-            # Rebuild learning priors from DB
             try:
                 le = get_learning_engine()
                 le.rebuild_priors(lookback_days=30)
@@ -184,22 +212,14 @@ class TradingEngine:
                 len(post_mortems),
                 len(plan.get("adjustments", [])),
             )
-            # FIX #2 & #3: Generate plan AND apply it
-            plan = TUNER.get_daily_improvement_plan()
-            self.daily_stats["last_plan"] = plan
-
-            # Rebuild learning priors from DB
-            try:
-                le = get_learning_engine()
-                le.rebuild_priors(lookback_days=30)
-            except Exception as e:
-                logger.warning("daily_learning_rebuild_failed: %s", e)
-
-            logger.info("daily_learning_complete plan_adjustments=%d", len(plan.get("adjustments", [])))
 
     @staticmethod
     def _parse_time(trade):
-        ts = trade.get("timestamp") or trade.get("created_at") or trade.get("time")
+        ts = (
+            trade.get("timestamp")
+            or trade.get("created_at")
+            or trade.get("time")
+        )
         if not ts:
             return datetime.now(timezone.utc)
         if isinstance(ts, (int, float)):
@@ -216,11 +236,20 @@ class TradingEngine:
         min_edge = thresholds.get("min_edge_bps", 50)
         max_spread = thresholds.get("max_spread_pct", 0.08)
 
-        for m in markets[:max_positions * 3]:
+        for m in markets[: max_positions * 3]:
             if hasattr(m, "spread"):
-                spread, liquidity, confidence = m.spread, m.liquidity, m.confidence
+                spread, liquidity, confidence = (
+                    m.spread,
+                    m.liquidity,
+                    m.confidence,
+                )
                 mid, title = m.id, m.title
-                category = m.category.value if hasattr(m.category, "value") else str(m.category)
+                category = (
+                    m.category.value
+                    if hasattr(m.category, "value")
+                    else str(m.category)
+                )
+                market_price = getattr(m, "last_price", 0.5) or 0.5
             else:
                 spread = m.get("spread", 1.0)
                 liquidity = m.get("liquidity", 0.0)
@@ -228,14 +257,11 @@ class TradingEngine:
                 mid = m.get("id", "")
                 title = m.get("title", "Untitled")
                 category = str(m.get("category", "other"))
+                market_price = m.get("last_price", 0.5) or 0.5
 
             if spread > max_spread or liquidity < 500:
                 continue
 
-            if hasattr(m, "spread"):
-                market_price = getattr(m, "last_price", 0.5) or 0.5
-            else:
-                market_price = m.get("last_price", 0.5) or 0.5
             try:
                 fair_prob = confidence
                 edge_bps = int(abs(fair_prob - market_price) * 10000)
@@ -244,36 +270,43 @@ class TradingEngine:
                 fair_prob = 0.5
 
             total_score = (
-                (confidence * 40) +
-                (min(liquidity / 10000, 1.0) * 20) +
-                (max(0, 1 - spread / max_spread) * 20) +
-                (min(edge_bps / 200, 1.0) * 20)
+                (confidence * 40)
+                + (min(liquidity / 10000, 1.0) * 20)
+                + (max(0, 1 - spread / max_spread) * 20)
+                + (min(edge_bps / 200, 1.0) * 20)
             )
 
             if total_score >= min_score and edge_bps >= min_edge:
-                # Near resolution bonus
                 try:
                     ends = getattr(m, "ends_at", None) or m.get("ends_at")
                     if ends:
-                        mins = (ends - datetime.now(timezone.utc)).total_seconds() / 60
+                        mins = (
+                            ends - datetime.now(timezone.utc)
+                        ).total_seconds() / 60
                         if 5 < mins < 60 and confidence > 0.85:
                             total_score += 15
                             edge_bps += 25
                 except Exception:
                     pass
 
-                candidates.append({
-                    "market": m,
-                    "total_score": round(total_score, 2),
-                    "edge_bps": edge_bps,
-                    "fair_prob": fair_prob,
-                })
+                candidates.append(
+                    {
+                        "market": m,
+                        "total_score": round(total_score, 2),
+                        "edge_bps": edge_bps,
+                        "fair_prob": fair_prob,
+                    }
+                )
 
         candidates.sort(key=lambda x: x["total_score"], reverse=True)
         return candidates
 
     def _select_trades(self, candidates, thresholds):
-        max_daily = max(0, thresholds.get("max_daily_trades", 5) - self.daily_stats["trades_today"])
+        max_daily = max(
+            0,
+            thresholds.get("max_daily_trades", 5)
+            - self.daily_stats["trades_today"],
+        )
         if max_daily <= 0:
             return []
         return candidates[:max_daily]
@@ -286,12 +319,20 @@ class TradingEngine:
         for sel in selected:
             m = sel["market"]
             price = sel.get("fair_prob", 0.5)
-            size = min(thresholds.get("max_risk_per_trade_usd", 50.0) / max(price, 0.01), 100.0)
+            size = min(
+                thresholds.get("max_risk_per_trade_usd", 50.0)
+                / max(price, 0.01),
+                100.0,
+            )
 
             if hasattr(m, "id"):
                 market_id, market_title = m.id, m.title
                 m_confidence = m.confidence
-                m_category = m.category.value if hasattr(m.category, "value") else str(m.category)
+                m_category = (
+                    m.category.value
+                    if hasattr(m.category, "value")
+                    else str(m.category)
+                )
             else:
                 market_id = m.get("id", "")
                 market_title = m.get("title", "Untitled")
@@ -299,16 +340,29 @@ class TradingEngine:
                 m_category = str(m.get("category", "other"))
 
             info = {
-                "market_id": market_id, "market_title": market_title, "side": "BUY",
-                "price": round(price, 4), "size": round(size, 4),
-                "total_score": sel["total_score"], "edge_bps": sel["edge_bps"],
-                "predicted_prob": price, "confidence": m_confidence, "category": m_category,
+                "market_id": market_id,
+                "market_title": market_title,
+                "side": "BUY",
+                "price": round(price, 4),
+                "size": round(size, 4),
+                "total_score": sel["total_score"],
+                "edge_bps": sel["edge_bps"],
+                "predicted_prob": price,
+                "confidence": m_confidence,
+                "category": m_category,
             }
 
             if not dry_run and auto_execute:
                 try:
-                    result = await self.api.place_order(market_id, "BUY", size, price)
-                    info.update({"status": "executed", "order_id": result.get("id", "")})
+                    result = await self.api.place_order(
+                        market_id, "BUY", size, price
+                    )
+                    info.update(
+                        {
+                            "status": "executed",
+                            "order_id": result.get("id", ""),
+                        }
+                    )
                     self.daily_stats["trades_today"] += 1
                 except Exception as e:
                     info.update({"status": "failed", "error": str(e)})
