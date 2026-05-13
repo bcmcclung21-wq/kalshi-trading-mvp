@@ -32,7 +32,6 @@ MARKET_TZ = ZoneInfo(TUNING.market_timezone)
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _LADDER_ROOT_RE = re.compile(r"^(tc-temp-[a-z0-9-]+high-\d{4}-\d{2}-\d{2})-", re.IGNORECASE)
 
-
 def _extract_market_date(market: dict[str, Any]) -> date | None:
     for key in ("ticker", "event_ticker", "title", "subtitle"):
         text = str(market.get(key) or "")
@@ -45,7 +44,6 @@ def _extract_market_date(market: dict[str, Any]) -> date | None:
             continue
     return None
 
-
 def _best_effort_minutes(market: dict[str, Any], close_dt: datetime | None, now: datetime) -> float | None:
     if close_dt is not None:
         return (close_dt - now).total_seconds() / 60.0
@@ -55,34 +53,26 @@ def _best_effort_minutes(market: dict[str, Any], close_dt: datetime | None, now:
     except (TypeError, ValueError):
         return None
 
-
 def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
     if not orderbook:
         return False
-
     yes_bids = orderbook.get("yes_bids") or orderbook.get("yes") or []
     yes_asks = orderbook.get("yes_asks") or []
     no_bids = orderbook.get("no_bids") or orderbook.get("no") or []
     no_asks = orderbook.get("no_asks") or []
-
     if not yes_bids and not yes_asks:
         return False
     if not no_bids and not no_asks:
         return False
-
     return True
-
 
 def has_market_liquidity(market: dict[str, Any]) -> bool:
     return True
 
-
 def validate_market_candidate(market: dict[str, Any], orderbook: dict[str, Any]) -> tuple[bool, str]:
     if not has_valid_orderbook(orderbook):
         return False, "invalid_orderbook"
-
     return True, "valid"
-
 
 @dataclass(slots=True)
 class Candidate:
@@ -102,7 +92,6 @@ class Candidate:
     rationale: str
     details: dict[str, Any]
 
-
 def normalize_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for market in markets:
@@ -110,7 +99,6 @@ def normalize_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if nm and str(nm.get("ticker") or ""):
             normalized.append(nm)
     return normalized
-
 
 def _parse_close_dt(market: dict[str, Any]) -> datetime | None:
     close_value = market.get("close_time") or market.get("expiration_time")
@@ -125,7 +113,6 @@ def _parse_close_dt(market: dict[str, Any]) -> datetime | None:
     except Exception:
         return None
 
-
 def _settlement_window_ok(close_dt: datetime, now: datetime) -> bool:
     minutes = (close_dt - now).total_seconds() / 60.0
     if minutes < TUNING.min_minutes_to_close:
@@ -133,7 +120,6 @@ def _settlement_window_ok(close_dt: datetime, now: datetime) -> bool:
     if minutes > TUNING.max_settlement_window_hours * 60:
         return False
     return True
-
 
 def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
     out = []
@@ -228,7 +214,6 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
     logger.info("pool_category_breakdown sports_kept=%d climate_kept=%d politics_kept=%d", sports_kept, climate_kept, politics_kept)
     return out, rejects
 
-
 def combo_pool(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not TUNING.allow_combos:
         return []
@@ -243,7 +228,6 @@ def combo_pool(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out.append(market)
     return out
 
-
 def diversified_pool(markets, max_total, per_category):
     from collections import defaultdict
     grouped = defaultdict(list)
@@ -254,7 +238,6 @@ def diversified_pool(markets, max_total, per_category):
         bucket = grouped[category]
         out.extend(bucket[:per_category])
     return out[:max_total]
-
 
 def _extract_prices(levels: list[Any]) -> list[float]:
     out: list[float] = []
@@ -269,41 +252,25 @@ def _extract_prices(levels: list[Any]) -> list[float]:
             out.append(price)
     return out
 
-
 def best_bid(levels: list[Any]) -> float:
     prices = _extract_prices(levels)
     return max(prices) if prices else 0.0
-
 
 def best_ask(levels: list[Any]) -> float:
     prices = _extract_prices(levels)
     return min(prices) if prices else 0.0
 
-
 def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | None:
-    """
-    Select the best executable side (YES or NO) from an orderbook.
-
-    Uses full binary complement reconstruction to derive effective prices,
-    then computes spread from those effective prices. Handles edge cases:
-    - Missing bids/asks on one side (reconstructed from complement)
-    - Zero prices (treated as valid, not falsy)
-    - Inverted markets (ask < bid) detected and rejected
-
-    Returns: (side, entry_price, spread_cents) or None if untradeable
-    """
     yes_bids = list(orderbook.get("yes_bids") or orderbook.get("yes") or [])
     yes_asks = list(orderbook.get("yes_asks") or [])
     no_bids = list(orderbook.get("no_bids") or orderbook.get("no") or [])
     no_asks = list(orderbook.get("no_asks") or [])
 
-    # Native prices from orderbook
     yes_bid_native = best_bid(yes_bids)
     yes_ask_native = best_ask(yes_asks)
     no_bid_native = best_bid(no_bids)
     no_ask_native = best_ask(no_asks)
 
-    # Derive missing prices from the other side's complement BEFORE computing spreads.
     yes_bid = yes_bid_native
     yes_ask = yes_ask_native
     no_bid = no_bid_native
@@ -330,7 +297,6 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
         return None
 
     def _compute_spread(ask: float, bid: float, executable: bool) -> float:
-        """Compute spread in cents. Returns 999.0 for non-executable or inverted."""
         if not executable or ask <= 0.0:
             return 999.0
         if bid < 0.0:
@@ -353,13 +319,11 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
         return ("NO", no_ask, no_spread)
     return None
 
-
 def _family_key(market: dict[str, Any]) -> str:
     ticker = str(market.get("ticker") or "").lower()
     event = str(market.get("event_ticker") or "").lower()
     mt = _LADDER_ROOT_RE.match(ticker)
     return mt.group(1) if mt else event
-
 
 def build_candidate(
     market: dict[str, Any],
@@ -379,13 +343,11 @@ def build_candidate(
     if quote is None:
         return None, "invalid_orderbook"
     side, entry_price, spread_cents = quote
-    # Extract native prices from orderbook for logging/context
     yes_bid_native = best_bid(list(orderbook.get("yes_bids") or orderbook.get("yes") or []))
     yes_ask_native = best_ask(list(orderbook.get("yes_asks") or []))
     no_bid_native = best_bid(list(orderbook.get("no_bids") or orderbook.get("no") or []))
     no_ask_native = best_ask(list(orderbook.get("no_asks") or []))
 
-    # Compute effective prices using IDENTICAL logic to _best_quote_side().
     yes_bid_eff = yes_bid_native
     yes_ask_eff = yes_ask_native
     no_bid_eff = no_bid_native
@@ -432,23 +394,6 @@ def build_candidate(
         side=side,
         sibling_markets=candidate_siblings,
         manual_note=manual_note,
-        def _orderbook_imbalance_score(orderbook: dict[str, Any]) -> float:
-    """0-100 score based on bid/ask depth asymmetry."""
-    yes_bids = sum(float(b.get("qty", 0)) for b in (orderbook.get("yes_bids") or []))
-    yes_asks = sum(float(a.get("qty", 0)) for a in (orderbook.get("yes_asks") or []))
-    no_bids = sum(float(b.get("qty", 0)) for b in (orderbook.get("no_bids") or []))
-    no_asks = sum(float(a.get("qty", 0)) for a in (orderbook.get("no_asks") or []))
-    
-    total_depth = yes_bids + yes_asks + no_bids + no_asks
-    if total_depth == 0:
-        return 50.0
-    
-    # Imbalance = one side has much more depth than the other
-    yes_ratio = (yes_bids + yes_asks) / total_depth
-    imbalance = abs(yes_ratio - 0.5) * 2  # 0 = balanced, 1 = extreme
-    
-    # Higher score when imbalance is moderate (exploitable), not extreme
-    return max(0, min(100, 100 - imbalance * 80))
     )
     total_score = (
         (envelope.projection_score * 0.35)
@@ -541,7 +486,6 @@ def build_candidate(
             "projection_model": getattr(envelope, "projection_model", "unknown"),
         },
     ), None
-
 
 def rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
     singles = [c for c in candidates if c.market_type == "single"]
