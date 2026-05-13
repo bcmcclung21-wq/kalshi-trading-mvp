@@ -11,6 +11,7 @@ from app.cashout import CashoutManager
 from app.engine import TradingEngine
 from app.polymarket import PolymarketAPI
 from app.services.universe import UniverseService
+from app.routers import dashboard
 logger = logging.getLogger('app.main')
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title='Poly Trading MVP', lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 app.mount('/static', StaticFiles(directory='static'), name='static')
+app.include_router(dashboard.router, prefix='/api', tags=['dashboard'])
 @app.get('/')
 async def root(): return FileResponse('static/index.html')
 @app.get('/api/health')
