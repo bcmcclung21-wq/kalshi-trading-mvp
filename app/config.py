@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(case_sensitive=False, extra="ignore")
@@ -18,7 +16,7 @@ class Settings(BaseSettings):
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
 
-    auto_execute: bool = False
+    auto_execute: bool = False       # SAFETY: default False
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
     sports_same_day_only: bool = True
@@ -32,5 +30,12 @@ class Settings(BaseSettings):
     cashout_tp3_pct: float = 100.0
     cashout_tp3_size_pct: float = 30.0
 
+    # Strategy thresholds (also defined in strategy.py — keep in sync)
+    min_total_score_single: float = 50.0
+    min_total_score_multi: float = 45.0
+    min_edge_bps: int = 50
+    max_spread_pct: float = 0.08
+    max_daily_trades: int = 5
+    max_risk_per_trade_usd: float = 50.0
 
 settings = Settings()
