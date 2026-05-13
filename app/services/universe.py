@@ -64,6 +64,7 @@ class UniverseService:
         self.allowed_categories = allowed_categories or list(Category)
         self._cache: List[Market] = []
         self._last_fetch: Optional[datetime] = None
+        self._refresh_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -71,14 +72,15 @@ class UniverseService:
 
     async def refresh(self) -> List[Market]:
         """Fetch latest markets and cache them."""
-        raw = await self._fetch_raw()
-        scored = [self._score(m) for m in raw]
-        filtered = [m for m in scored if self._passes_filters(m)]
-        # Sort: confidence desc, then liquidity desc, then EV desc
-        filtered.sort(key=lambda m: (m.confidence, m.liquidity, m.ev or 0), reverse=True)
-        self._cache = filtered
-        self._last_fetch = datetime.utcnow()
-        return filtered
+        async with self._refresh_lock:
+            raw = await self._fetch_raw()
+            scored = [self._score(m) for m in raw]
+            filtered = [m for m in scored if self._passes_filters(m)]
+            # Sort: confidence desc, then liquidity desc, then EV desc
+            filtered.sort(key=lambda m: (m.confidence, m.liquidity, m.ev or 0), reverse=True)
+            self._cache = filtered
+            self._last_fetch = datetime.utcnow()
+            return filtered
 
     async def get_candidates(
         self,
@@ -156,6 +158,7 @@ class UniverseService:
         logger.info("universe_fetch_start", extra={"url": url, "base": base})
         markets = []
         offset = 0
+        max_markets = 5000
         async with httpx.AsyncClient(timeout=30) as client:
             while True:
                 try:
@@ -179,7 +182,16 @@ class UniverseService:
                     if len(data) < 100:
                         break
                     offset += 100
+                    if offset >= max_markets:
+                        logger.info("universe_fetch_max_reached", extra={"max": max_markets})
+                        break
+                    await asyncio.sleep(0.15)
                 except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429:
+                        logger.warning("universe_fetch_rate_limited", extra={
+                            "url": str(e.request.url),
+                        })
+                        return markets
                     logger.error("universe_fetch_http_error", extra={
                         "status": e.response.status_code,
                         "url": str(e.request.url),
