@@ -16,7 +16,7 @@ class UniverseService:
         self._last_refresh: Optional[datetime] = None
         self._refresh_lock = asyncio.Lock()
         self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com").rstrip("/")
-        self.max_markets = int(os.getenv("MAX_MARKETS_FETCH", "3000"))
+        self.max_markets = int(os.getenv("MAX_MARKETS_FETCH", "800"))
 
     async def get_active_markets(self):
         stale = self._last_refresh is None or (datetime.now(timezone.utc) - self._last_refresh) > timedelta(minutes=5)
@@ -101,11 +101,16 @@ class UniverseService:
             volume_24h = 0.0
 
         spread = 0.05
+        market_price = 0.5
         try:
             bid = float(raw.get("bestBid", 0))
             ask = float(raw.get("bestAsk", 1))
+            last = raw.get("lastPrice")
+            if isinstance(last, (int, float, str)):
+                market_price = float(last)
             if ask > 0:
                 spread = (ask - bid) / ask
+                market_price = (bid + ask) / 2
         except Exception:
             pass
 
@@ -122,6 +127,7 @@ class UniverseService:
             liquidity=liquidity,
             spread=spread,
             volume_24h=volume_24h,
+            market_price=max(0.0, min(1.0, market_price)),
             ends_at=ends_at,
             url=url,
         )

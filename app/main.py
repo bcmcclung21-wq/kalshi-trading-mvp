@@ -20,18 +20,23 @@ from app.services.universe import UniverseService
 from app.routers import dashboard
 
 logger = logging.getLogger("app.main")
+_cycle_lock = asyncio.Lock()
 
 # ------------------------------------------------------------------
 # Background cycle task
 # ------------------------------------------------------------------
 async def _run_cycle_loop(engine: TradingEngine, interval_sec: int = 60):
     while True:
+        await asyncio.sleep(interval_sec)
+        if _cycle_lock.locked():
+            logger.warning("cycle_still_running_skipping")
+            continue
         try:
-            result = await engine.run_cycle()
-            logger.info("cycle_complete: %s", result)
+            async with _cycle_lock:
+                result = await engine.run_cycle()
+                logger.info("cycle_complete: %s", result)
         except Exception as e:
             logger.exception("cycle_failed: %s", e)
-        await asyncio.sleep(interval_sec)
 
 # ------------------------------------------------------------------
 # Lifespan
@@ -45,6 +50,10 @@ async def lifespan(app: FastAPI):
     calibration = CalibrationService()
     engine = TradingEngine(api, universe, calibration)
     cashout = CashoutManager(api)
+    app.state.universe = universe
+    app.state.engine = engine
+    app.state.cashout = cashout
+    app.state.settings = settings
 
     app.state._cycle_task = asyncio.create_task(
         _run_cycle_loop(engine, interval_sec=60)
