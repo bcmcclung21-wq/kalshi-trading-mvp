@@ -1,12 +1,12 @@
 from __future__ import annotations
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 from app.services.universe import UniverseService
 from app.strategy import TUNER, get_adjusted_thresholds
+from app.learning import get_learning_engine
 
 logger = logging.getLogger("app.engine")
 
@@ -15,22 +15,37 @@ class TradingEngine:
         self.api = api
         self.universe = universe
         self.calibration = calibration
-        self.daily_stats = {"trades_today": 0, "daily_pnl": 0.0, "last_reset": datetime.utcnow().date()}
+        self.daily_stats = {
+            "trades_today": 0,
+            "daily_pnl": 0.0,
+            "last_reset": datetime.now(timezone.utc).date(),
+            "last_trades": [],
+            "last_plan": {},
+            "brier_score": 0.0,
+            "win_rate": 0.0,
+        }
         self._learning_lock = asyncio.Lock()
 
     async def run_cycle(self):
-        """Full trading cycle with exception safety at top level."""
         try:
             today = datetime.now(timezone.utc).date()
             if today != self.daily_stats["last_reset"]:
                 await self._run_daily_learning()
-                self.daily_stats = {"trades_today": 0, "daily_pnl": 0.0, "last_reset": today}
+                self.daily_stats = {
+                    "trades_today": 0, "daily_pnl": 0.0,
+                    "last_reset": today, "last_trades": [],
+                    "last_plan": {}, "brier_score": 0.0, "win_rate": 0.0,
+                }
 
             markets = await self.universe.get_active_markets()
             if not markets:
                 return {"status": "no_markets", "trades": 0}
 
+            # UPDATE BRIER — FIX #1
             brier = self.calibration.brier_score()
+            TUNER.update_brier(brier)
+            self.daily_stats["brier_score"] = round(brier, 4)
+
             thresholds = get_adjusted_thresholds()
             if brier > 0.25 and self.calibration.trade_count >= 5:
                 thresholds["min_total_score_single"] += 5.0
@@ -48,6 +63,12 @@ class TradingEngine:
             for t in executed:
                 self.calibration.record_trade(t["market_id"], t["predicted_prob"], t["side"])
 
+            # Update daily stats with trades
+            self.daily_stats["last_trades"] = executed[-10:]
+            self.daily_stats["win_rate"] = round(
+                TUNER.learning.winning_trades / max(1, TUNER.learning.total_trades), 4
+            )
+
             return {
                 "status": "ok",
                 "trades": len(executed),
@@ -64,8 +85,10 @@ class TradingEngine:
                 trades = await self.api.get_trades(limit=200)
             except Exception:
                 trades = []
+
             yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             day_trades = [t for t in trades if isinstance(t, dict) and self._parse_time(t) >= yesterday]
+
             for trade in day_trades:
                 pnl = trade.get("realized_pnl", 0) or trade.get("pnl", 0) or 0
                 mid = trade.get("market_id") or trade.get("id", "")
@@ -77,6 +100,7 @@ class TradingEngine:
                     ).value
                 except Exception:
                     pass
+
                 TUNER.record_trade_outcome(
                     cat,
                     trade.get("price", 0.5),
@@ -87,20 +111,32 @@ class TradingEngine:
                     {"price": trade.get("price", 0.5), "volume": 0},
                 )
 
+            # FIX #2 & #3: Generate plan AND apply it
+            plan = TUNER.get_daily_improvement_plan()
+            self.daily_stats["last_plan"] = plan
+
+            # Rebuild learning priors from DB
+            try:
+                le = get_learning_engine()
+                le.rebuild_priors(lookback_days=30)
+            except Exception as e:
+                logger.warning("daily_learning_rebuild_failed: %s", e)
+
+            logger.info("daily_learning_complete plan_adjustments=%d", len(plan.get("adjustments", [])))
+
     @staticmethod
     def _parse_time(trade):
         ts = trade.get("timestamp") or trade.get("created_at") or trade.get("time")
         if not ts:
             return datetime.now(timezone.utc)
         if isinstance(ts, (int, float)):
-            return datetime.utcfromtimestamp(ts)
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
         try:
             return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         except Exception:
             return datetime.now(timezone.utc)
 
     def _score_candidates(self, markets, thresholds):
-        """Real scoring: filter by spread, liquidity, compute edge & confidence."""
         candidates = []
         max_positions = thresholds.get("max_positions", 10)
         min_score = thresholds.get("min_total_score_single", 50.0)
@@ -123,17 +159,14 @@ class TradingEngine:
             if spread > max_spread or liquidity < 500:
                 continue
 
-            # Compute edge from confidence vs market price
-            market_price = 0.5  # default; ideally fetch from orderbook
+            market_price = 0.5
             try:
-                # Use confidence as proxy for "fair probability"
                 fair_prob = confidence
                 edge_bps = int(abs(fair_prob - market_price) * 10000)
             except Exception:
                 edge_bps = 0
                 fair_prob = 0.5
 
-            # Total score = weighted composite
             total_score = (
                 (confidence * 40) +
                 (min(liquidity / 10000, 1.0) * 20) +
@@ -149,31 +182,24 @@ class TradingEngine:
                     "fair_prob": fair_prob,
                 })
 
-        # Sort by total score descending
         candidates.sort(key=lambda x: x["total_score"], reverse=True)
         return candidates
 
     def _select_trades(self, candidates, thresholds):
-        """Select top N candidates respecting daily trade limit."""
         max_daily = max(0, thresholds.get("max_daily_trades", 5) - self.daily_stats["trades_today"])
         if max_daily <= 0:
             return []
         return candidates[:max_daily]
 
     async def _execute_trades(self, selected, thresholds):
-        """Execute or dry-run selected trades."""
         executed = []
-        # FIX: read from settings, not os.getenv
         auto_execute = settings.auto_execute
-        dry_run = not auto_execute  # safety: if auto_execute is False, always dry-run
+        dry_run = not auto_execute
 
         for sel in selected:
             m = sel["market"]
             price = sel.get("fair_prob", 0.5)
-            size = min(
-                thresholds.get("max_risk_per_trade_usd", 50.0) / max(price, 0.01),
-                100.0,
-            )
+            size = min(thresholds.get("max_risk_per_trade_usd", 50.0) / max(price, 0.01), 100.0)
 
             if hasattr(m, "id"):
                 market_id, market_title = m.id, m.title
