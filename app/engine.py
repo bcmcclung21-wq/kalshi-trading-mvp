@@ -175,18 +175,22 @@ class TradingEngine:
             )
 
             if total_score >= min_score and edge_bps >= min_edge:
+                # Near resolution bonus
+                try:
+                    ends = getattr(m, "ends_at", None) or m.get("ends_at")
+                    if ends:
+                        mins = (ends - datetime.now(timezone.utc)).total_seconds() / 60
+                        if 5 < mins < 60 and confidence > 0.85:
+                            total_score += 15
+                            edge_bps += 25
+                except Exception:
+                    pass
+
                 candidates.append({
                     "market": m,
                     "total_score": round(total_score, 2),
                     "edge_bps": edge_bps,
                     "fair_prob": fair_prob,
-                    # Inside _score_candidates loop, after computing total_score:
-    from datetime import timezone
-            if hasattr(m, "ends_at") and m.ends_at:
-               minutes_to_close = (m.ends_at - datetime.now(timezone.utc)).total_seconds() / 60
-            if 5 < minutes_to_close < 60 and confidence > 0.85:
-               total_score += 15  # Near resolution bonus
-               edge_bps += 25
                 })
 
         candidates.sort(key=lambda x: x["total_score"], reverse=True)
