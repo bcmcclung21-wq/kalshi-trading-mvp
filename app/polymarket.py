@@ -1,126 +1,50 @@
-import os
-import asyncio
-import logging
-from typing import Optional, Dict, Any, List
-
-from polymarket_us import PolymarketUS
-
+"""Polymarket API wrapper using direct HTTP calls (no deprecated SDK)."""
+from __future__ import annotations
+import logging, os
+import httpx
 logger = logging.getLogger("app.polymarket")
 
-
-class PolyMarketAPI:
+class PolymarketAPI:
     def __init__(self):
-        key_id = os.getenv("POLYMARKET_KEY_ID")
-        secret_key = os.getenv("POLYMARKET_SECRET_KEY")
-        if not key_id or not secret_key:
-            raise RuntimeError("POLYMARKET_KEY_ID and POLYMARKET_SECRET_KEY required")
+        self.api_key = os.getenv("POLYMARKET_API_KEY", "")
+        self.api_secret = os.getenv("POLYMARKET_API_SECRET", "")
+        self.passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
+        self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
+        self.data_base = os.getenv("POLYMARKET_DATA_BASE", "https://data-api.polymarket.com")
+        self.api_base = os.getenv("POLYMARKET_API_BASE", "https://api.polymarket.us")
+        self.headers = {}
+        if self.api_key: self.headers["POLYMARKET_API_KEY"] = self.api_key
+        if self.api_secret: self.headers["POLYMARKET_API_SECRET"] = self.api_secret
+        if self.passphrase: self.headers["POLYMARKET_PASSPHRASE"] = self.passphrase
 
-        kwargs = {
-            "key_id": key_id,
-            "secret_key": secret_key,
-        }
-        gateway_base_url = os.getenv("POLYMARKET_GATEWAY_BASE")
-        api_base_url = os.getenv("POLYMARKET_API_BASE")
-        if gateway_base_url:
-            kwargs["gateway_base_url"] = gateway_base_url
-        if api_base_url:
-            kwargs["api_base_url"] = api_base_url
-
-        self.client = PolymarketUS(**kwargs)
-        self._auth_ok = False
-
-    async def health_check(self) -> bool:
-        try:
-            bal = await asyncio.to_thread(self.client.account.balances)
-            self._auth_ok = bool(bal)
-            return self._auth_ok
-        except Exception:
-            logger.error("auth_health_check_failed", exc_info=True)
-            self._auth_ok = False
-            return False
-
-    @property
-    def auth_ok(self) -> bool:
-        return self._auth_ok
-
-    async def get_orderbook(self, ticker: str) -> Optional[Dict[str, Any]]:
-        try:
-            return await asyncio.to_thread(self.client.markets.book, ticker)
-        except Exception as e:
-            logger.warning("orderbook_fetch_failed", extra={"ticker": ticker, "error": str(e)})
-            return None
-
-    async def place_buy_order(self, ticker: str, price: float, size: float, outcome: str = "YES") -> Optional[Dict]:
-        if not self._auth_ok:
-            logger.error("place_buy_order_rejected_no_auth", extra={"ticker": ticker})
-            return None
-        if os.getenv("AUTO_EXECUTE", "false").lower() != "true":
-            logger.info("dry_run_buy", extra={"ticker": ticker, "price": price, "size": size, "outcome": outcome})
-            return {"dry_run": True}
-        try:
-            payload = {
-                "market": ticker,
-                "side": "buy",
-                "price": price,
-                "size": size,
-                "outcome": outcome,
-            }
-            result = await asyncio.to_thread(self.client.orders.create, payload)
-            logger.info("buy_order_submitted", extra={"ticker": ticker, "outcome": outcome, "result": result})
-            return result
-        except Exception as e:
-            logger.error("buy_order_submit_failed", extra={"ticker": ticker, "error": str(e)})
-            return None
-
-    async def place_sell_order(self, ticker: str, price: float, size: float, outcome: str = "YES") -> Optional[Dict]:
-        if not self._auth_ok:
-            logger.error("place_sell_order_rejected_no_auth", extra={"ticker": ticker})
-            return None
-        if os.getenv("AUTO_EXECUTE", "false").lower() != "true":
-            logger.info("dry_run_sell", extra={"ticker": ticker, "price": price, "size": size, "outcome": outcome})
-            return {"dry_run": True}
-        try:
-            payload = {
-                "market": ticker,
-                "side": "sell",
-                "price": price,
-                "size": size,
-                "outcome": outcome,
-            }
-            result = await asyncio.to_thread(self.client.orders.create, payload)
-            logger.info("sell_order_submitted", extra={"ticker": ticker, "outcome": outcome, "result": result})
-            return result
-        except Exception as e:
-            logger.error("sell_order_submit_failed", extra={"ticker": ticker, "error": str(e)})
-            return None
-
-    async def get_markets(self, limit: int = 100, offset: int = 0) -> List[Dict]:
-        try:
-            return await asyncio.to_thread(
-                self.client.markets.list,
-                {"limit": limit, "offset": offset, "active": "true", "closed": "false", "archived": "false"}
-            )
-        except Exception as e:
-            logger.error("markets_fetch_failed", extra={"error": str(e)})
-            return []
-
-    async def get_positions(self, limit: int = 100) -> list:
-        try:
-            return await asyncio.to_thread(self.client.portfolio.positions, {"limit": limit})
-        except Exception as e:
-            logger.error("positions_fetch_failed", extra={"error": str(e)})
-            return []
-
-    async def get_activities(self, limit: int = 100) -> list:
-        try:
-            return await asyncio.to_thread(self.client.portfolio.activities, {"limit": limit})
-        except Exception as e:
-            logger.error("activities_fetch_failed", extra={"error": str(e)})
-            return []
-
-    async def get_balances(self) -> Optional[Dict]:
-        try:
-            return await asyncio.to_thread(self.client.account.balances)
-        except Exception as e:
-            logger.error("balances_fetch_failed", extra={"error": str(e)})
-            return None
+    async def get_markets(self, limit=100, offset=0, closed=False, tag=None):
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(f"{self.gamma_base}/markets", params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})}); r.raise_for_status(); return r.json()
+    async def get_market(self, market_id):
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(f"{self.gamma_base}/markets/{market_id}"); r.raise_for_status(); return r.json()
+    async def get_orderbook(self, ticker):
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(f"{self.gamma_base}/orderbook/{ticker}"); r.raise_for_status(); return r.json()
+    async def get_balances(self):
+        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+            r = await c.get(f"{self.api_base}/v1/account/balances"); r.raise_for_status(); return r.json()
+    async def get_positions(self, limit=100):
+        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+            r = await c.get(f"{self.data_base}/v1/portfolio/positions", params={"limit": limit}); r.raise_for_status(); d = r.json();
+            return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+    async def get_trades(self, limit=100):
+        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+            r = await c.get(f"{self.data_base}/v1/portfolio/trades", params={"limit": limit}); r.raise_for_status(); d = r.json();
+            return (d.get("trades", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+    async def place_order(self, market_id, side, size, price):
+        payload = {"marketId": market_id, "side": side.upper(), "size": str(size), "price": str(price), "type": "limit"}
+        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+            r = await c.post(f"{self.api_base}/v1/orders", json=payload); r.raise_for_status(); return r.json()
+    async def cancel_order(self, order_id):
+        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+            r = await c.delete(f"{self.api_base}/v1/orders/{order_id}"); r.raise_for_status(); return r.json()
+    async def sell_position(self, market_id, outcome, size):
+        payload = {"marketId": market_id, "side": "SELL", "size": str(size), "price": "0.01", "type": "limit", "outcome": outcome}
+        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
+            r = await c.post(f"{self.api_base}/v1/orders", json=payload); r.raise_for_status(); return r.json()

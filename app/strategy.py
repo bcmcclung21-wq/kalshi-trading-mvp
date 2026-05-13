@@ -1,174 +1,141 @@
+"""Strategy configuration with daily learning and auto-tuning."""
 from __future__ import annotations
-
-import os
+import json, logging, os
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List, Optional
 
-CATEGORIES = ["sports", "politics", "crypto", "climate", "economics"]
-SPORTS = "sports"
-
-BANKROLL_RULES = {
-    1: 0.0200,
-    2: 0.0100,
-    3: 0.0075,
-    4: 0.0050,
-}
-
+logger = logging.getLogger("app.strategy")
 
 def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw in (None, ""):
-        return default
-    cleaned = str(raw).strip().strip('"').strip("'")
-    try:
-        return int(cleaned)
-    except ValueError:
-        import logging
-        logging.getLogger("app.strategy").warning(
-            f"Invalid int env var {name}={raw!r}, using default {default}"
-        )
-        return default
-
+    v = os.getenv(name)
+    return default if v is None else v.lower() in ("1", "true", "yes", "on")
 
 def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw in (None, ""):
-        return default
-    cleaned = str(raw).strip().strip('"').strip("'")
-    try:
-        return float(cleaned)
-    except ValueError:
-        import logging
-        logging.getLogger("app.strategy").warning(
-            f"Invalid float env var {name}={raw!r}, using default {default}"
-        )
-        return default
+    try: return float(os.getenv(name, str(default)))
+    except ValueError: return default
 
+def _env_int(name: str, default: int) -> int:
+    try: return int(os.getenv(name, str(default)))
+    except ValueError: return default
 
 @dataclass
-class RuntimeTuning:
-    auto_execute: bool = True
-    allow_combos: bool = False
-    max_combo_legs: int = 4
-    max_orders_per_cycle: int = 5
-    check_interval_sec: int = 20
-    market_sync_interval_sec: int = 60
-    reconcile_interval_sec: int = 60
-    audit_interval_sec: int = 300
-    daily_audit_hour_utc: int = 12
-    calibration_interval_sec: int = 300
-    calibration_window_size: int = 50
-    calibration_brier_threshold: float = 0.25
-    calibration_cooldown_sec: int = 300
+class LearningState:
+    total_trades: int = 0; winning_trades: int = 0; losing_trades: int = 0
+    total_pnl: float = 0.0; avg_pnl_per_trade: float = 0.0
+    best_category: str = ""; worst_category: str = ""
+    category_performance: Dict[str, Dict] = field(default_factory=dict)
+    feature_weights: Dict[str, float] = field(default_factory=dict)
+    threshold_history: List[Dict] = field(default_factory=list)
+    last_adjustment: Optional[str] = None; days_active: int = 0; brier_score: float = 1.0
+    def to_dict(self):
+        return {"total_trades": self.total_trades, "winning_trades": self.winning_trades,
+                "losing_trades": self.losing_trades, "total_pnl": self.total_pnl,
+                "avg_pnl_per_trade": self.avg_pnl_per_trade, "best_category": self.best_category,
+                "worst_category": self.worst_category, "category_performance": self.category_performance,
+                "feature_weights": self.feature_weights, "threshold_history": self.threshold_history[-30:],
+                "last_adjustment": self.last_adjustment, "days_active": self.days_active,
+                "brier_score": self.brier_score}
 
-    min_volume: float = 5.0
-    min_open_interest: float = 2.0
-    max_spread_cents: float = 20.0
-    min_minutes_to_close: int = 20
-    max_days_to_close: int = 2
-    market_timezone: str = "America/New_York"
-    max_settlement_window_hours: int = 36
-    # SAME_DAY_ONLY now means "enforce near-term settlement window (no futures)"
-    # rather than strict UTC calendar-day equality.
-    same_day_only: bool = True
-    sports_same_day_only: bool = True
+class StrategyTuner:
+    def __init__(self): self.learning = LearningState(); self._load_learning_state()
+    def _load_learning_state(self):
+        try:
+            s = os.getenv("STRATEGY_LEARNING_STATE", "")
+            if s: self.learning = LearningState(**{k: v for k, v in json.loads(s).items() if k in LearningState.__dataclass_fields__})
+        except Exception as e: logger.warning("Could not load learning state: %s", e)
+    def save_learning_state(self): logger.info("strategy_learning_state %s", json.dumps(self.learning.to_dict()))
+    def record_trade_outcome(self, category: str, predicted_prob: float, actual_outcome: int, pnl: float, confidence: float, edge_bps: float, features: Dict[str, float]):
+        self.learning.total_trades += 1; self.learning.total_pnl += pnl
+        self.learning.winning_trades += 1 if pnl > 0 else 0
+        self.learning.losing_trades += 0 if pnl > 0 else 1
+        self.learning.avg_pnl_per_trade = self.learning.total_pnl / self.learning.total_trades
+        if category not in self.learning.category_performance:
+            self.learning.category_performance[category] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "avg_confidence": 0.0, "avg_edge": 0.0}
+        c = self.learning.category_performance[category]
+        c["trades"] += 1; c["wins"] += 1 if pnl > 0 else 0; c["losses"] += 0 if pnl > 0 else 1
+        c["pnl"] += pnl; n = c["trades"]
+        c["avg_confidence"] = (c["avg_confidence"] * (n - 1) + confidence) / n
+        c["avg_edge"] = (c["avg_edge"] * (n - 1) + edge_bps) / n
+        for fn, fv in features.items():
+            if fn not in self.learning.feature_weights: self.learning.feature_weights[fn] = 1.0
+            self.learning.feature_weights[fn] = max(0.1, min(3.0, self.learning.feature_weights[fn] + (0.05 if pnl > 0 else -0.03) * fv))
+        self.save_learning_state()
+    def update_brier(self, brier: float): self.learning.brier_score = brier
+    def get_daily_improvement_plan(self) -> Dict:
+        plan = {"date": datetime.now().isoformat(), "current_stats": self.learning.to_dict(), "adjustments": [], "focus_areas": []}
+        if self.learning.category_performance:
+            sc = sorted(self.learning.category_performance.items(), key=lambda x: x[1]["pnl"] / max(1, x[1]["trades"]), reverse=True)
+            self.learning.best_category = sc[0][0] if sc else ""; self.learning.worst_category = sc[-1][0] if sc else ""
+            plan["focus_areas"].append(f"Double down on {self.learning.best_category}")
+            if len(sc) > 1: plan["focus_areas"].append(f"Avoid or tighten {self.learning.worst_category}")
+        wr = self.learning.winning_trades / max(1, self.learning.total_trades)
+        if wr < 0.45:
+            plan["adjustments"].append({"parameter": "min_total_score_single", "change": "+5.0", "reason": f"Win rate {wr:.1%} too low, raising bar"})
+            plan["adjustments"].append({"parameter": "min_edge_bps", "change": "+50", "reason": "Require more edge per trade"})
+        elif wr > 0.60 and self.learning.total_trades > 20:
+            plan["adjustments"].append({"parameter": "min_total_score_single", "change": "-3.0", "reason": f"Win rate {wr:.1%} strong, lowering bar slightly"})
+        if self.learning.brier_score > 0.30:
+            plan["focus_areas"].append("Calibration poor - predictions overconfident")
+            plan["adjustments"].append({"parameter": "confidence_scaling", "change": "0.8", "reason": "Scale down confidence to match reality"})
+        self.learning.threshold_history.append({"date": datetime.now().isoformat(), "plan": plan})
+        self.learning.last_adjustment = datetime.now().isoformat(); self.learning.days_active += 1
+        return plan
+    def get_feature_weight(self, name: str) -> float: return self.learning.feature_weights.get(name, 1.0)
 
-    min_projection_score: float = 35.0
-    min_confidence_score: float = 45.0
-    min_total_score_single: float = 52.0
-    min_edge_bps: float = 100.0
-    min_fair_prob_gap: float = 0.015
-    extreme_price_min: float = 0.02
-    extreme_price_max: float = 0.98
-    min_total_score_combo: float = 66.0
+TUNER = StrategyTuner()
+BASE_MIN_TOTAL_SCORE_SINGLE = _env_float("MIN_TOTAL_SCORE_SINGLE", 50.0)
+BASE_MIN_TOTAL_SCORE_MULTI = _env_float("MIN_TOTAL_SCORE_MULTI", 45.0)
+MIN_EDGE_BPS = _env_int("MIN_EDGE_BPS", 50)
+MIN_FAIR_PROB_GAP = _env_float("MIN_FAIR_PROB_GAP", 0.01)
+MAX_SPREAD_PCT = _env_float("MAX_SPREAD_PCT", 0.08)
+MAX_EV_LOSS_PCT = _env_float("MAX_EV_LOSS_PCT", 0.03)
+MAX_POSITIONS = _env_int("MAX_POSITIONS", 10)
+MAX_DAILY_TRADES = _env_int("MAX_DAILY_TRADES", 5)
+MAX_RISK_PER_TRADE_USD = _env_float("MAX_RISK_PER_TRADE_USD", 50.0)
+MAX_DAILY_LOSS_USD = _env_float("MAX_DAILY_LOSS_USD", 200.0)
+AUTO_EXECUTE = _env_bool("AUTO_EXECUTE", True)
+DRY_RUN = _env_bool("DRY_RUN", False)
+CASHOUT_ENABLED = _env_bool("CASHOUT_ENABLED", True)
+CASHOUT_STOP_LOSS_PCT = _env_float("CASHOUT_STOP_LOSS_PCT", -15.0)
+CASHOUT_TP1_PCT = _env_float("CASHOUT_TP1_PCT", 25.0)
+CASHOUT_TP1_SIZE_PCT = _env_float("CASHOUT_TP1_SIZE_PCT", 40.0)
+BRIER_THRESHOLD = _env_float("BRIER_THRESHOLD", 0.25)
+MIN_TRADES_FOR_CALIBRATION = _env_int("MIN_TRADES_FOR_CALIBRATION", 5)
 
-    cashout_enabled: bool = True
-    cashout_stop_loss_pct: float = -15.0
-    cashout_tp1_pct: float = 25.0
-    cashout_tp1_size_pct: float = 40.0
-    cashout_tp2_pct: float = 50.0
-    cashout_tp2_size_pct: float = 30.0
-    cashout_tp3_pct: float = 100.0
-    cashout_tp3_size_pct: float = 30.0
+def get_adjusted_thresholds() -> Dict[str, float]:
+    wr = TUNER.learning.winning_trades / max(1, TUNER.learning.total_trades)
+    sa = 5.0 if wr < 0.45 else (-3.0 if wr > 0.60 and TUNER.learning.total_trades > 20 else 0.0)
+    ea = 25 if TUNER.learning.brier_score > 0.30 else 0
+    return {"min_total_score_single": BASE_MIN_TOTAL_SCORE_SINGLE + sa, "min_total_score_multi": BASE_MIN_TOTAL_SCORE_MULTI + sa,
+            "min_edge_bps": MIN_EDGE_BPS + ea, "min_fair_prob_gap": MIN_FAIR_PROB_GAP, "max_spread_pct": MAX_SPREAD_PCT,
+            "max_ev_loss_pct": MAX_EV_LOSS_PCT, "max_positions": MAX_POSITIONS, "max_daily_trades": MAX_DAILY_TRADES,
+            "max_risk_per_trade_usd": MAX_RISK_PER_TRADE_USD, "max_daily_loss_usd": MAX_DAILY_LOSS_USD}
 
-    max_markets_per_sync: int = 1200
-    max_orderbooks_per_cycle: int = 24
-    market_cache_ttl_sec: int = 10
-    orderbook_cache_ttl_sec: int = 3
-    balance_cache_ttl_sec: int = 10
-    positions_cache_ttl_sec: int = 10
-    summary_cache_ttl_sec: int = 5
+class _TuningProxy:
+    @property
+    def min_total_score_single(self): return get_adjusted_thresholds()["min_total_score_single"]
+    @property
+    def min_total_score_multi(self): return get_adjusted_thresholds()["min_total_score_multi"]
+    @property
+    def min_edge_bps(self): return get_adjusted_thresholds()["min_edge_bps"]
+    @property
+    def min_fair_prob_gap(self): return get_adjusted_thresholds()["min_fair_prob_gap"]
+    @property
+    def max_spread_pct(self): return get_adjusted_thresholds()["max_spread_pct"]
+    @property
+    def max_ev_loss_pct(self): return get_adjusted_thresholds()["max_ev_loss_pct"]
+    @property
+    def max_positions(self): return get_adjusted_thresholds()["max_positions"]
+    @property
+    def max_daily_trades(self): return get_adjusted_thresholds()["max_daily_trades"]
+    @property
+    def max_risk_per_trade_usd(self): return get_adjusted_thresholds()["max_risk_per_trade_usd"]
+    @property
+    def max_daily_loss_usd(self): return get_adjusted_thresholds()["max_daily_loss_usd"]
+    auto_execute = AUTO_EXECUTE; dry_run = DRY_RUN; cashout_enabled = CASHOUT_ENABLED
+    cashout_stop_loss_pct = CASHOUT_STOP_LOSS_PCT; cashout_tp1_pct = CASHOUT_TP1_PCT
+    cashout_tp1_size_pct = CASHOUT_TP1_SIZE_PCT; brier_threshold = BRIER_THRESHOLD
+    min_trades_for_calibration = MIN_TRADES_FOR_CALIBRATION
 
-    max_category_exposure_pct: float = 0.30
-    max_ticker_reentry_minutes: int = 180
-    max_order_notional_usd: float = 25.0
-    category_edge_bps: dict = field(default_factory=lambda: {
-        "sports": 75,
-        "politics": 100,
-        "economics": 100,
-        "crypto": 100,
-        "climate": 100,
-    })
-
-
-TUNING = RuntimeTuning(
-    auto_execute=_env_bool("AUTO_EXECUTE", True),
-    allow_combos=_env_bool("ALLOW_COMBOS", False),
-    max_combo_legs=_env_int("MAX_COMBO_LEGS", 4),
-    max_orders_per_cycle=_env_int("MAX_ORDERS_PER_CYCLE", 5),
-    check_interval_sec=_env_int("CHECK_INTERVAL_SEC", 20),
-    market_sync_interval_sec=_env_int("MARKET_SYNC_INTERVAL_SEC", 60),
-    reconcile_interval_sec=_env_int("RECONCILE_INTERVAL_SEC", 60),
-    audit_interval_sec=_env_int("AUDIT_INTERVAL_SEC", 300),
-    daily_audit_hour_utc=_env_int("DAILY_AUDIT_HOUR_UTC", 12),
-    calibration_interval_sec=_env_int("CALIBRATION_INTERVAL_SEC", 300),
-    calibration_window_size=_env_int("CALIBRATION_WINDOW_SIZE", 50),
-    calibration_brier_threshold=_env_float("CALIBRATION_BRIER_THRESHOLD", 0.25),
-    calibration_cooldown_sec=_env_int("CALIBRATION_COOLDOWN_SEC", 300),
-    min_volume=_env_float("MIN_VOLUME", 5.0),
-    min_open_interest=_env_float("MIN_OPEN_INTEREST", 2.0),
-    max_spread_cents=_env_float("MAX_SPREAD_CENTS", 20.0),
-    min_minutes_to_close=_env_int("MIN_MINUTES_TO_CLOSE", 20),
-    max_days_to_close=_env_int("MAX_DAYS_TO_CLOSE", 2),
-    market_timezone=os.getenv("MARKET_TIMEZONE", "America/New_York"),
-    max_settlement_window_hours=_env_int("MAX_SETTLEMENT_WINDOW_HOURS", 36),
-    same_day_only=_env_bool("SAME_DAY_ONLY", True),
-    sports_same_day_only=_env_bool("SPORTS_SAME_DAY_ONLY", True),
-    cashout_enabled=_env_bool("CASHOUT_ENABLED", True),
-    cashout_stop_loss_pct=_env_float("CASHOUT_STOP_LOSS_PCT", -15.0),
-    cashout_tp1_pct=_env_float("CASHOUT_TP1_PCT", 25.0),
-    cashout_tp1_size_pct=_env_float("CASHOUT_TP1_SIZE_PCT", 40.0),
-    cashout_tp2_pct=_env_float("CASHOUT_TP2_PCT", 50.0),
-    cashout_tp2_size_pct=_env_float("CASHOUT_TP2_SIZE_PCT", 30.0),
-    cashout_tp3_pct=_env_float("CASHOUT_TP3_PCT", 100.0),
-    cashout_tp3_size_pct=_env_float("CASHOUT_TP3_SIZE_PCT", 30.0),
-    min_projection_score=_env_float("MIN_PROJECTION_SCORE", 35.0),
-    min_confidence_score=_env_float("MIN_CONFIDENCE_SCORE", 45.0),
-    min_total_score_single=_env_float("MIN_TOTAL_SCORE_SINGLE", 52.0),
-    min_edge_bps=_env_float("MIN_EDGE_BPS", 100.0),
-    min_fair_prob_gap=_env_float("MIN_FAIR_PROB_GAP", 0.015),
-    extreme_price_min=_env_float("EXTREME_PRICE_MIN", 0.02),
-    extreme_price_max=_env_float("EXTREME_PRICE_MAX", 0.98),
-    min_total_score_combo=_env_float("MIN_TOTAL_SCORE_COMBO", 66.0),
-    max_markets_per_sync=_env_int("MAX_MARKETS_PER_SYNC", 1200),
-    max_orderbooks_per_cycle=_env_int("MAX_ORDERBOOKS_PER_CYCLE", 24),
-    market_cache_ttl_sec=_env_int("MARKET_CACHE_TTL_SEC", 10),
-    orderbook_cache_ttl_sec=_env_int("ORDERBOOK_CACHE_TTL_SEC", 3),
-    balance_cache_ttl_sec=_env_int("BALANCE_CACHE_TTL_SEC", 10),
-    positions_cache_ttl_sec=_env_int("POSITIONS_CACHE_TTL_SEC", 10),
-    summary_cache_ttl_sec=_env_int("SUMMARY_CACHE_TTL_SEC", 5),
-    max_category_exposure_pct=_env_float("MAX_CATEGORY_EXPOSURE_PCT", 0.30),
-    max_ticker_reentry_minutes=_env_int("MAX_TICKER_REENTRY_MINUTES", 180),
-    max_order_notional_usd=_env_float("MAX_ORDER_NOTIONAL_USD", 25.0),
-)
-
-
-def bankroll_pct(legs: int) -> float:
-    legs = max(1, min(4, int(legs)))
-    return BANKROLL_RULES[legs]
+TUNING = _TuningProxy()

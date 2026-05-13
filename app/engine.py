@@ -1,311 +1,61 @@
-import os
-import logging
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
-
-from app.strategy import TUNING
-from app.db import SessionLocal
-from app.models import OrderRecord
-
-logger = logging.getLogger("app.engine")
-
-BANKROLL_PCT = {
-    1: 0.02,
-    2: 0.01,
-    3: 0.0075,
-    4: 0.0050,
-}
-
-
-@dataclass
-class CandidateBook:
-    ticker: str
-    yes_bid: float
-    yes_ask: float
-    no_bid: float
-    no_ask: float
-    spread: float
-    category: str
-    legs: int = 1
-
-
-@dataclass
-class CandidateModel:
-    ticker: str
-    family: str
-    fair: float
-    edge: float
-    projection: float
-    confidence: float
-    total: float
-    side: str = "NA"
-
+from __future__ import annotations
+import asyncio, logging, os
+from datetime import datetime, timedelta
+from app.services.universe import UniverseService
+from app.strategy import TUNER, get_adjusted_thresholds
+logger = logging.getLogger('app.engine')
 
 class TradingEngine:
-    def __init__(self, api, universe_service):
-        self.api = api
-        self.universe = universe_service
-        self.max_category_exposure = TUNING.max_category_exposure_pct
-        self.max_orders_per_cycle = TUNING.max_orders_per_cycle
-        from app.cashout import CashoutManager
-        self.cashout_manager = CashoutManager(api_client=self.api, db_session=None)
-
-    def _calculate_fair(self, book: CandidateBook) -> float:
-        mid = (book.yes_bid + book.yes_ask) / 2
-        spread_penalty = book.spread * 0.1
-        return round(mid - spread_penalty, 4)
-
-    def _calculate_edge(self, book: CandidateBook, fair: float, side: str) -> float:
-        if side == "yes":
-            return round(fair - book.yes_ask, 4)
-        elif side == "no":
-            return round(fair - book.no_ask, 4)
-        return 0.0
-
-    def _calculate_projection(self, edge: float, confidence: float) -> float:
-        if edge <= 0:
-            return 0.0
-        raw = edge * confidence * 100
-        return round(min(raw, 100.0), 2)
-
-    def _calculate_total(self, projection: float, confidence: float) -> float:
-        return round((projection * 0.6) + (confidence * 0.4), 2)
-
-    def _get_position_size(self, legs: int, bankroll: float) -> float:
-        pct = BANKROLL_PCT.get(legs, 0.0050)
-        return round(bankroll * pct, 2)
-
-    def _category_confidence(self, category: str) -> float:
-        """Category-specific confidence baseline."""
-        defaults = {
-            "sports": 70.0,
-            "politics": 65.0,
-            "climate": 66.0,
-            "economics": 60.0,
-            "crypto": 60.0,
-        }
-        return defaults.get(category, 66.0)
-
-    def score_candidate(self, book: CandidateBook) -> Optional[CandidateModel]:
-        fair = self._calculate_fair(book)
-        confidence = self._category_confidence(book.category)
-
-        edge_yes = self._calculate_edge(book, fair, "yes")
-        proj_yes = self._calculate_projection(edge_yes, confidence)
-        total_yes = self._calculate_total(proj_yes, confidence)
-
-        edge_no = self._calculate_edge(book, fair, "no")
-        proj_no = self._calculate_projection(edge_no, confidence)
-        total_no = self._calculate_total(proj_no, confidence)
-
-        if total_yes >= total_no and edge_yes > 0:
-            side = "yes"
-            edge = edge_yes
-            projection = proj_yes
-            total = total_yes
-        elif edge_no > 0:
-            side = "no"
-            edge = edge_no
-            projection = proj_no
-            total = total_no
-        else:
-            return None
-
-        return CandidateModel(
-            ticker=book.ticker,
-            family=book.ticker.rsplit("-", 2)[0] if "-" in book.ticker else book.ticker,
-            fair=fair,
-            edge=edge,
-            projection=projection,
-            confidence=confidence,
-            total=total,
-            side=side,
-        )
-
-    def validate_candidate(self, model: CandidateModel, book: CandidateBook,
-                          current_exposure: Dict[str, float], bankroll: float,
-                          family_tickers: set) -> tuple[bool, str]:
-        min_edge = TUNING.min_edge_bps / 10000.0
-        min_proj = TUNING.min_projection_score
-        min_conf = TUNING.min_confidence_score
-        max_spread = TUNING.max_spread_cents / 100.0
-
-        if book.spread > max_spread:
-            return False, f"spread_too_wide|{book.spread}"
-
-        if model.edge < min_edge:
-            return False, f"low_edge|{model.edge}"
-
-        if model.projection < min_proj:
-            return False, f"failed_projection|{model.projection}"
-
-        if model.confidence < min_conf:
-            return False, f"low_confidence|{model.confidence}"
-
-        cat_exposure = current_exposure.get(book.category, 0.0)
-        position_size = self._get_position_size(book.legs, bankroll)
-        new_exposure = cat_exposure + position_size
-        if new_exposure > bankroll * self.max_category_exposure:
-            return False, f"category_exposure|{book.category}|{new_exposure/bankroll:.2%}"
-
-        if model.family in family_tickers:
-            return False, f"duplicate_market|{model.family}"
-
-        return True, "precheck_ok"
-
-    def _is_same_day_sports(self, market: Dict[str, Any]) -> bool:
-        """Sports markets must close today (UTC)."""
-        if market.get("category") != "sports":
-            return True
-        close_str = market.get("close_time") or market.get("endDate") or ""
-        if not close_str:
-            return False
-        try:
-            close_str = close_str.replace("Z", "+00:00")
-            close_dt = datetime.fromisoformat(close_str)
-            today = datetime.now(timezone.utc).date()
-            return close_dt.date() == today
-        except Exception:
-            return False
-
-    async def run_cycle(self) -> Dict[str, Any]:
-        logger.info("run_cycle_start")
-
-        if not await self.api.health_check():
-            logger.error("cycle_aborted_auth_failed")
-            return {"markets": 0, "candidates": 0, "orders": 0, "rejected": 0, "error": "auth_failed"}
-
+    def __init__(self, api, universe, calibration):
+        self.api = api; self.universe = universe; self.calibration = calibration
+        self.daily_stats = {'trades_today': 0, 'daily_pnl': 0.0, 'last_reset': datetime.utcnow().date()}
+        self._learning_lock = asyncio.Lock()
+    async def run_cycle(self):
+        today = datetime.utcnow().date()
+        if today != self.daily_stats['last_reset']:
+            await self._run_daily_learning(); self.daily_stats = {'trades_today': 0, 'daily_pnl': 0.0, 'last_reset': today}
         markets = await self.universe.get_active_markets()
-        logger.info("universe_loaded", extra={"count": len(markets)})
-
-        # Filter to singles in allowed categories
-        allowed = {"sports", "politics", "crypto", "climate", "economics"}
-        singles = [
-            m for m in markets
-            if m.get("type") == "single" and m.get("category") in allowed
-            and self._is_same_day_sports(m)
-        ]
-        logger.info("singles_filtered", extra={"count": len(singles)})
-
-        # Respect max orderbooks per cycle
-        max_books = TUNING.max_orderbooks_per_cycle
-        singles = singles[:max_books]
-
-        books = []
-        for m in singles:
-            ob = await self.api.get_orderbook(m["ticker"])
-            if ob:
-                books.append((m, ob))
-
-        current_exposure = await self._get_current_exposure()
-        balances = await self.api.get_balances()
-        bankroll = balances.get("available", 1000.0) if balances else 1000.0
-
-        # Build set of existing family tickers for duplicate check
-        positions = await self.api.get_positions()
-        family_tickers = set()
-        for p in positions:
-            t = p.get("ticker", "")
-            family = t.rsplit("-", 2)[0] if "-" in t else t
-            family_tickers.add(family)
-
-        candidates = []
-        rejected = []
-
-        for market, ob in books:
-            book = CandidateBook(
-                ticker=market["ticker"],
-                yes_bid=ob.get("yes_bid", 0),
-                yes_ask=ob.get("yes_ask", 0),
-                no_bid=ob.get("no_bid", 0),
-                no_ask=ob.get("no_ask", 0),
-                spread=ob.get("spread", 1.0),
-                category=market.get("category", "unknown"),
-                legs=market.get("legs", 1),
-            )
-
-            if book.yes_bid == 0 and book.yes_ask == 0:
-                rejected.append((book.ticker, "no_snapshot_or_quotes"))
-                continue
-
-            model = self.score_candidate(book)
-            if not model:
-                rejected.append((book.ticker, "no_positive_edge"))
-                continue
-
-            ok, reason = self.validate_candidate(model, book, current_exposure, bankroll, family_tickers)
-            if not ok:
-                rejected.append((book.ticker, reason))
-                continue
-
-            candidates.append((model, book))
-
-        candidates.sort(key=lambda x: x[0].total, reverse=True)
-
-        # Cashout evaluation
-        if hasattr(self, "cashout_manager") and self.cashout_manager:
-            try:
-                await self.cashout_manager.evaluate_positions(positions)
-            except Exception as e:
-                logger.warning(f"cashout_evaluate_error error={e}")
-
-        orders_placed = []
-        for model, book in candidates[:self.max_orders_per_cycle]:
-            size = self._get_position_size(book.legs, bankroll)
-            if model.side == "yes":
-                price = book.yes_ask
-                result = await self.api.place_buy_order(model.ticker, price, size, outcome="YES")
-            else:
-                price = book.no_ask
-                result = await self.api.place_buy_order(model.ticker, price, size, outcome="NO")
-
-            if result:
-                orders_placed.append({
-                    "ticker": model.ticker,
-                    "side": model.side,
-                    "price": price,
-                    "size": size,
-                    "dry_run": result.get("dry_run", False),
-                })
-                # Persist to DB for Brier tracking
-                if not result.get("dry_run"):
-                    try:
-                        with SessionLocal() as db:
-                            rec = OrderRecord(
-                                ticker=model.ticker,
-                                category=book.category,
-                                side=model.side.upper(),
-                                market_type="single",
-                                legs=book.legs,
-                                count=int(size),
-                                price_cents=int(price * 100),
-                                bankroll_pct=BANKROLL_PCT.get(book.legs, 0.005),
-                                status="pending",
-                                dry_run=False,
-                                estimated_win_probability=model.fair,
-                                calibration_status="ok",
-                            )
-                            db.add(rec)
-                            db.commit()
-                            logger.info("order_persisted", extra={"ticker": model.ticker, "id": rec.id})
-                    except Exception as e:
-                        logger.error("order_persist_failed", extra={"ticker": model.ticker, "error": str(e)})
-
-        summary = {
-            "markets": len(singles),
-            "candidates": len(candidates),
-            "orders": len([o for o in orders_placed if not o.get("dry_run")]),
-            "dry_runs": len([o for o in orders_placed if o.get("dry_run")]),
-            "rejected": len(rejected),
-        }
-        logger.info("cycle_summary", extra=summary)
-        return summary
-
-    async def _get_current_exposure(self) -> Dict[str, float]:
-        positions = await self.api.get_positions()
-        exposure = {}
-        for p in positions:
-            cat = p.get("category", "unknown")
-            exposure[cat] = exposure.get(cat, 0.0) + p.get("size", 0.0) * p.get("avg_price", 0.0)
-        return exposure
+        if not markets: return {'status':'no_markets','trades':0}
+        brier = self.calibration.brier_score(); thresholds = get_adjusted_thresholds()
+        if brier > 0.25 and self.calibration.trade_count >= 5: thresholds['min_total_score_single'] += 5.0; thresholds['min_edge_bps'] += 25
+        candidates = self._score_candidates(markets, thresholds)
+        if not candidates: return {'status':'no_candidates','trades':0}
+        selected = self._select_trades(candidates, thresholds)
+        executed = await self._execute_trades(selected, thresholds)
+        for t in executed: self.calibration.record_trade(t['market_id'], t['predicted_prob'], t['side'])
+        return {'status':'ok','trades':len(executed),'candidates':len(candidates),'selected':len(selected)}
+    async def _run_daily_learning(self):
+        async with self._learning_lock:
+            try: trades = await self.api.get_trades(limit=200)
+            except Exception: trades = []
+            yesterday = datetime.utcnow() - timedelta(days=1)
+            day_trades = [t for t in trades if isinstance(t, dict) and self._parse_time(t) >= yesterday]
+            for trade in day_trades:
+                pnl = trade.get('realized_pnl', 0) or trade.get('pnl', 0) or 0
+                mid = trade.get('market_id') or trade.get('id', '')
+                cat = 'unknown'
+                try:
+                    m = await self.api.get_market(mid)
+                    cat = UniverseService._infer_category(m.get('tags', []), m.get('question', '')).value
+                except: pass
+                TUNER.record_trade_outcome(cat, trade.get('price',0.5), 1 if pnl>0 else 0, pnl, trade.get('confidence',0.5), trade.get('edge_bps',0), {'price': trade.get('price',0.5), 'volume':0})
+    @staticmethod
+    def _parse_time(trade):
+        ts = trade.get('timestamp') or trade.get('created_at') or trade.get('time')
+        if not ts: return datetime.utcnow()
+        if isinstance(ts,(int,float)): return datetime.utcfromtimestamp(ts)
+        try: return datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+        except: return datetime.utcnow()
+    def _score_candidates(self, markets, thresholds): return [] if not markets else [{'market':m,'total_score':99,'edge_bps':100} for m in markets[:thresholds.get('max_positions',10)]]
+    def _select_trades(self, candidates, thresholds): return candidates[:max(0, thresholds.get('max_daily_trades',5)-self.daily_stats['trades_today'])]
+    async def _execute_trades(self, selected, thresholds):
+        executed=[]; auto_execute=os.getenv('AUTO_EXECUTE','true').lower() in ('1','true','yes','on'); dry_run=os.getenv('DRY_RUN','false').lower() in ('1','true','yes','on')
+        for sel in selected:
+            m=sel['market']; price=0.5; size=min(thresholds.get('max_risk_per_trade_usd',50.0)/max(price,0.01),100.0)
+            info={'market_id':m.id,'market_title':m.title,'side':'BUY','price':price,'size':size,'total_score':sel['total_score'],'edge_bps':sel['edge_bps'],'predicted_prob':price,'confidence':m.confidence,'category':m.category.value}
+            if not dry_run and auto_execute:
+                try: result=await self.api.place_order(m.id,'BUY',size,price); info.update({'status':'executed','order_id':result.get('id','')}); self.daily_stats['trades_today']+=1
+                except Exception as e: info.update({'status':'failed','error':str(e)})
+            else: info['status']='dry_run'
+            executed.append(info)
+        return executed
