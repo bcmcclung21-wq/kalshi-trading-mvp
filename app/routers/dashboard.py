@@ -1,10 +1,11 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from fastapi import APIRouter, Request
+import logging
 
+logger = logging.getLogger("app.routers.dashboard")
 router = APIRouter()
 
-# In-memory cache: 5-second TTL to protect from polling
 _cache = {"ts": None, "payload": None}
 
 
@@ -12,41 +13,72 @@ _cache = {"ts": None, "payload": None}
 async def dashboard(request: Request):
     now = datetime.now(timezone.utc)
 
-    # Return cached payload if fresh
     if _cache["ts"] and (now - _cache["ts"]).total_seconds() < 5:
         return _cache["payload"]
 
-    # Pull services from app.state (never import from main)
     universe = getattr(request.app.state, "universe", None)
     engine = getattr(request.app.state, "engine", None)
     settings = getattr(request.app.state, "settings", None)
 
     markets = []
-    if universe is not None and hasattr(universe, "_markets"):
+    if universe is not None:
+        market_list = getattr(universe, "_markets", [])
+        logger.info("dashboard_universe_markets_count=%d", len(market_list))
         cutoff = now
-        for market in universe._markets[:50]:
-            if not hasattr(market, "id"):
-                continue
-            markets.append(
-                {
-                    "id": market.id,
-                    "title": market.title,
-                    "category": (
+        for i, market in enumerate(market_list[:50]):
+            try:
+                if isinstance(market, dict):
+                    mid = market.get("id", "")
+                    title = market.get("title", "Untitled")
+                    cat = str(market.get("category", "other"))
+                    confidence = float(market.get("confidence", 0))
+                    liquidity = float(market.get("liquidity", 0))
+                    spread = float(market.get("spread", 1))
+                    url = market.get("url", "")
+                    ends_at = market.get("ends_at")
+                else:
+                    mid = getattr(market, "id", "")
+                    title = getattr(market, "title", "Untitled")
+                    cat = (
                         market.category.value
-                        if hasattr(market.category, "value")
-                        else str(market.category)
-                    ),
-                    "confidence": round(market.confidence, 3),
-                    "liquidity": market.liquidity,
-                    "spread": round(market.spread, 4),
-                    "url": market.url,
-                    "active": (
-                        market.ends_at > cutoff
-                        if hasattr(market, "ends_at")
-                        else True
-                    ),
-                }
-            )
+                        if hasattr(market, "category") and hasattr(market.category, "value")
+                        else str(getattr(market, "category", "other"))
+                    )
+                    confidence = float(getattr(market, "confidence", 0))
+                    liquidity = float(getattr(market, "liquidity", 0))
+                    spread = float(getattr(market, "spread", 1))
+                    url = getattr(market, "url", "")
+                    ends_at = getattr(market, "ends_at", None)
+
+                if not mid:
+                    continue
+
+                active = True
+                if ends_at:
+                    try:
+                        if isinstance(ends_at, str):
+                            ends_at = datetime.fromisoformat(ends_at.replace("Z", "+00:00"))
+                        active = ends_at > cutoff
+                    except Exception:
+                        active = True
+
+                markets.append({
+                    "id": mid,
+                    "title": title,
+                    "category": cat,
+                    "confidence": round(confidence, 3),
+                    "liquidity": liquidity,
+                    "spread": round(spread, 4),
+                    "url": url,
+                    "active": active,
+                })
+            except Exception as e:
+                logger.warning("dashboard_market_parse_error idx=%d: %s", i, e)
+                continue
+    else:
+        logger.warning("dashboard_universe_is_none")
+
+    logger.info("dashboard_parsed_markets=%d", len(markets))
 
     trades = []
     daily_stats = {}
