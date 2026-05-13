@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 
+from pydantic import BaseModel
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,6 +12,28 @@ from app.db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class Category(str, Enum):
+    SPORTS = "sports"
+    POLITICS = "politics"
+    CRYPTO = "crypto"
+    ECONOMY = "economy"
+    TECH = "tech"
+    OTHER = "other"
+
+
+class Market(BaseModel):
+    id: str
+    title: str
+    category: Category
+    confidence: float = 0.0
+    ev: float | None = None
+    liquidity: float = 0.0
+    spread: float = 1.0
+    volume_24h: float = 0.0
+    ends_at: datetime
+    url: str = ""
 
 
 class MarketSnapshot(Base):
