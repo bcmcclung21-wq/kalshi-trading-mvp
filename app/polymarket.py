@@ -15,6 +15,7 @@ class PolymarketAPI:
         self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
         self.data_base = os.getenv("POLYMARKET_DATA_BASE", "https://data-api.polymarket.com")
         self.api_base = os.getenv("POLYMARKET_API_BASE", "https://api.polymarket.us")
+        self.wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS", "").strip()
         self.headers = {}
         if self.api_key:
             self.headers["POLYMARKET_API_KEY"] = self.api_key
@@ -59,6 +60,13 @@ class PolymarketAPI:
                     r.raise_for_status()
                     return r.json()
             except httpx.HTTPStatusError as e:
+                request_url = str(e.request.url) if e.request else url
+                logger.warning(
+                    "polymarket_request_failed status=%s url=%s response=%s",
+                    e.response.status_code if e.response else "unknown",
+                    request_url,
+                    (e.response.text[:500] if e.response else ""),
+                )
                 if e.response.status_code == 404:
                     raise
                 last_error = e
@@ -70,15 +78,16 @@ class PolymarketAPI:
         return None
 
     async def get_positions(self, limit=100):
-        primary_url = f"{self.data_base}/positions"
-        fallback_url = f"{self.gamma_base}/positions"
+        data_url = f"{self.data_base}/positions"
+        gamma_url = f"{self.gamma_base}/positions"
 
-        try:
-            d = await self.fetch_with_retry(primary_url, params={"limit": limit})
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise
-            d = await self.fetch_with_retry(fallback_url, params={"limit": limit})
+        if self.wallet_address:
+            data_params = {"user": self.wallet_address, "limit": limit}
+            logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
+            d = await self.fetch_with_retry(data_url, params=data_params)
+        else:
+            logger.info("fetching_positions source=gamma-api limit=%s", limit)
+            d = await self.fetch_with_retry(gamma_url, params={"limit": limit})
 
         return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
 
