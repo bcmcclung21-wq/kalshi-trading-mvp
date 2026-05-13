@@ -19,7 +19,18 @@ class Settings(BaseSettings):
     auto_execute: bool = False       # SAFETY: default False
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
+    same_day_only: bool = True
     sports_same_day_only: bool = True
+    market_timezone: str = "America/New_York"
+    min_minutes_to_close: float = 20.0
+    max_settlement_window_hours: float = 168.0
+    max_spread_cents: float = 10.0
+    min_projection_score: float = 35.0
+    min_confidence_score: float = 50.0
+    extreme_price_min: float = 0.05
+    extreme_price_max: float = 0.95
+    max_combo_legs: int = 4
+    category_edge_bps: dict = {}
 
     cashout_enabled: bool = True
     cashout_stop_loss_pct: float = -15.0

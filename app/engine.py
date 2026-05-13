@@ -107,19 +107,27 @@ class TradingEngine:
         min_edge = thresholds.get("min_edge_bps", 50)
         max_spread = thresholds.get("max_spread_pct", 0.08)
 
-        for m in markets[:max_positions * 3]:  # scan deeper than final selection
-            # Skip markets with bad spread
-            if m.spread > max_spread:
-                continue
-            # Skip markets with insufficient liquidity
-            if m.liquidity < 500:
+        for m in markets[:max_positions * 3]:
+            if hasattr(m, "spread"):
+                spread, liquidity, confidence = m.spread, m.liquidity, m.confidence
+                mid, title = m.id, m.title
+                category = m.category.value if hasattr(m.category, "value") else str(m.category)
+            else:
+                spread = m.get("spread", 1.0)
+                liquidity = m.get("liquidity", 0.0)
+                confidence = m.get("confidence", 0.0)
+                mid = m.get("id", "")
+                title = m.get("title", "Untitled")
+                category = str(m.get("category", "other"))
+
+            if spread > max_spread or liquidity < 500:
                 continue
 
             # Compute edge from confidence vs market price
             market_price = 0.5  # default; ideally fetch from orderbook
             try:
                 # Use confidence as proxy for "fair probability"
-                fair_prob = m.confidence
+                fair_prob = confidence
                 edge_bps = int(abs(fair_prob - market_price) * 10000)
             except Exception:
                 edge_bps = 0
@@ -127,9 +135,9 @@ class TradingEngine:
 
             # Total score = weighted composite
             total_score = (
-                (m.confidence * 40) +
-                (min(m.liquidity / 10000, 1.0) * 20) +
-                (max(0, 1 - m.spread / max_spread) * 20) +
+                (confidence * 40) +
+                (min(liquidity / 10000, 1.0) * 20) +
+                (max(0, 1 - spread / max_spread) * 20) +
                 (min(edge_bps / 200, 1.0) * 20)
             )
 
@@ -167,22 +175,26 @@ class TradingEngine:
                 100.0,
             )
 
+            if hasattr(m, "id"):
+                market_id, market_title = m.id, m.title
+                m_confidence = m.confidence
+                m_category = m.category.value if hasattr(m.category, "value") else str(m.category)
+            else:
+                market_id = m.get("id", "")
+                market_title = m.get("title", "Untitled")
+                m_confidence = m.get("confidence", 0.0)
+                m_category = str(m.get("category", "other"))
+
             info = {
-                "market_id": m.id,
-                "market_title": m.title,
-                "side": "BUY",
-                "price": round(price, 4),
-                "size": round(size, 4),
-                "total_score": sel["total_score"],
-                "edge_bps": sel["edge_bps"],
-                "predicted_prob": price,
-                "confidence": m.confidence,
-                "category": m.category.value,
+                "market_id": market_id, "market_title": market_title, "side": "BUY",
+                "price": round(price, 4), "size": round(size, 4),
+                "total_score": sel["total_score"], "edge_bps": sel["edge_bps"],
+                "predicted_prob": price, "confidence": m_confidence, "category": m_category,
             }
 
             if not dry_run and auto_execute:
                 try:
-                    result = await self.api.place_order(m.id, "BUY", size, price)
+                    result = await self.api.place_order(market_id, "BUY", size, price)
                     info.update({"status": "executed", "order_id": result.get("id", "")})
                     self.daily_stats["trades_today"] += 1
                 except Exception as e:

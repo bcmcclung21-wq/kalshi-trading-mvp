@@ -20,7 +20,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import SessionLocal
@@ -287,7 +287,7 @@ class LearningEngine:
         rows_written = 0
         try:
             with SessionLocal() as db:
-                db.query(LearnedPrior).delete()
+                db.execute(delete(LearnedPrior))
                 db.add(LearnedPrior(
                     feature_key="_global",
                     bucket="_all",
