@@ -432,6 +432,23 @@ def build_candidate(
         side=side,
         sibling_markets=candidate_siblings,
         manual_note=manual_note,
+        def _orderbook_imbalance_score(orderbook: dict[str, Any]) -> float:
+    """0-100 score based on bid/ask depth asymmetry."""
+    yes_bids = sum(float(b.get("qty", 0)) for b in (orderbook.get("yes_bids") or []))
+    yes_asks = sum(float(a.get("qty", 0)) for a in (orderbook.get("yes_asks") or []))
+    no_bids = sum(float(b.get("qty", 0)) for b in (orderbook.get("no_bids") or []))
+    no_asks = sum(float(a.get("qty", 0)) for a in (orderbook.get("no_asks") or []))
+    
+    total_depth = yes_bids + yes_asks + no_bids + no_asks
+    if total_depth == 0:
+        return 50.0
+    
+    # Imbalance = one side has much more depth than the other
+    yes_ratio = (yes_bids + yes_asks) / total_depth
+    imbalance = abs(yes_ratio - 0.5) * 2  # 0 = balanced, 1 = extreme
+    
+    # Higher score when imbalance is moderate (exploitable), not extreme
+    return max(0, min(100, 100 - imbalance * 80))
     )
     total_score = (
         (envelope.projection_score * 0.35)
