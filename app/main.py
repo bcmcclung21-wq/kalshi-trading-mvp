@@ -1,10 +1,10 @@
+from __future__ import annotations
 import logging
 logging.basicConfig(level=logging.WARNING, format="%(name)s %(levelname)s %(message)s")
-from __future__ import annotations
+
 import asyncio
-import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,10 +22,9 @@ from app.routers import dashboard
 logger = logging.getLogger("app.main")
 
 # ------------------------------------------------------------------
-# Background cycle task — THE ROOT FIX
+# Background cycle task
 # ------------------------------------------------------------------
 async def _run_cycle_loop(engine: TradingEngine, interval_sec: int = 60):
-    """Run trading cycles on a fixed interval with crash recovery."""
     while True:
         try:
             result = await engine.run_cycle()
@@ -47,7 +46,6 @@ async def lifespan(app: FastAPI):
     engine = TradingEngine(api, universe, calibration)
     cashout = CashoutManager(api)
 
-    # START THE REAL BACKGROUND CYCLE (was: asyncio.sleep(999999))
     app.state._cycle_task = asyncio.create_task(
         _run_cycle_loop(engine, interval_sec=60)
     )
@@ -81,7 +79,7 @@ async def root():
 async def health():
     return {
         "status": "ok",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "markets_cached": len(universe._markets) if "universe" in globals() else 0,
         "last_refresh": (
             universe._last_refresh.isoformat()
@@ -94,6 +92,5 @@ async def health():
 
 @app.post("/api/trigger-cycle")
 async def trigger_cycle():
-    """Manual trigger for testing."""
     result = await engine.run_cycle()
     return result
