@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 from app.services.universe import UniverseService
@@ -21,7 +21,7 @@ class TradingEngine:
     async def run_cycle(self):
         """Full trading cycle with exception safety at top level."""
         try:
-            today = datetime.utcnow().date()
+            today = datetime.now(timezone.utc).date()
             if today != self.daily_stats["last_reset"]:
                 await self._run_daily_learning()
                 self.daily_stats = {"trades_today": 0, "daily_pnl": 0.0, "last_reset": today}
@@ -64,7 +64,7 @@ class TradingEngine:
                 trades = await self.api.get_trades(limit=200)
             except Exception:
                 trades = []
-            yesterday = datetime.utcnow() - timedelta(days=1)
+            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             day_trades = [t for t in trades if isinstance(t, dict) and self._parse_time(t) >= yesterday]
             for trade in day_trades:
                 pnl = trade.get("realized_pnl", 0) or trade.get("pnl", 0) or 0
@@ -91,13 +91,13 @@ class TradingEngine:
     def _parse_time(trade):
         ts = trade.get("timestamp") or trade.get("created_at") or trade.get("time")
         if not ts:
-            return datetime.utcnow()
+            return datetime.now(timezone.utc)
         if isinstance(ts, (int, float)):
             return datetime.utcfromtimestamp(ts)
         try:
             return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         except Exception:
-            return datetime.utcnow()
+            return datetime.now(timezone.utc)
 
     def _score_candidates(self, markets, thresholds):
         """Real scoring: filter by spread, liquidity, compute edge & confidence."""
