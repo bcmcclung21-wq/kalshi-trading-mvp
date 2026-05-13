@@ -3,26 +3,23 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 
 router = APIRouter()
+_cache = {"ts": None, "payload": None}
 
 @router.get("/dashboard")
 async def dashboard(request: Request):
-    try:
-        from app.main import universe, engine, cashout
-        from app.config import settings
-        from app.strategy import TUNER
-    except Exception:
-        universe = None
-        engine = None
-        cashout = None
-        settings = None
-        TUNER = None
+    now = datetime.now(timezone.utc)
+    if _cache["ts"] and (now - _cache["ts"]).total_seconds() < 5:
+        return _cache["payload"]
+    universe = getattr(request.app.state, "universe", None)
+    engine = getattr(request.app.state, "engine", None)
+    settings = getattr(request.app.state, "settings", None)
+    from app.strategy import TUNER
 
     markets = []
     if universe is not None and hasattr(universe, "_markets"):
         raw = universe._markets
         items = raw if isinstance(raw, list) else []
-        now = datetime.now(timezone.utc)
-        for market in items:
+        for market in items[:50]:
             if not hasattr(market, "id"):
                 continue
             markets.append({
@@ -35,8 +32,6 @@ async def dashboard(request: Request):
                 "url": market.url,
                 "active": market.ends_at > now if hasattr(market, "ends_at") else True,
             })
-            if len(markets) >= 50:
-                break
 
     trades = []
     daily_stats = {}
@@ -56,9 +51,9 @@ async def dashboard(request: Request):
     if TUNER is not None:
         learning_state = TUNER.learning.to_dict()
 
-    return {
+    payload = {
         "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
         "markets": markets,
         "markets_count": len(markets),
         "trades": trades,
@@ -71,3 +66,6 @@ async def dashboard(request: Request):
         "learning": learning_state,
         "last_plan": last_plan,
     }
+    _cache["ts"] = now
+    _cache["payload"] = payload
+    return payload

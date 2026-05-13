@@ -2,6 +2,7 @@
 let autoExecute = false;
 let allowCombos = false;
 let refreshInterval = null;
+let intervalMs = 10000;
 
 async function fetchDashboard() {
   try {
@@ -10,14 +11,17 @@ async function fetchDashboard() {
       const text = await res.text();
       console.error('Dashboard HTTP error:', res.status, text);
       showError('Server error ' + res.status);
+      onError();
       return;
     }
 
     const data = await res.json();
+    intervalMs = 10000;
     render(data);
   } catch (err) {
     console.error('Dashboard fetch error:', err);
     showError('Network error: ' + err.message);
+    onError();
   }
 }
 
@@ -97,7 +101,17 @@ function updateToggleButtons() {
 function startRefresh() {
   if (refreshInterval) clearInterval(refreshInterval);
   fetchDashboard();
-  refreshInterval = setInterval(fetchDashboard, 5000);
+  refreshInterval = setInterval(() => {
+    if (!document.hidden) fetchDashboard();
+  }, intervalMs);
+}
+
+function onError() {
+  intervalMs = Math.min(intervalMs * 2, 60000);
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshInterval = setInterval(() => {
+    if (!document.hidden) fetchDashboard();
+  }, intervalMs);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
