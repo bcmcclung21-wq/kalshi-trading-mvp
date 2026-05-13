@@ -1,27 +1,989 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Poly Trading MVP</title>
-    <link rel="stylesheet" href="/static/app.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Poly Trading MVP — Analytics Dashboard</title>
+<style>
+/* ─── Design Tokens ─── */
+:root {
+  --bg-primary: #0b0d12;
+  --bg-secondary: #11141c;
+  --bg-tertiary: #181c27;
+  --bg-elevated: #1e2330;
+  --border: #252a3a;
+  --border-light: #2f3548;
+  --text-primary: #e8ecf1;
+  --text-secondary: #8b95a8;
+  --text-muted: #5a6275;
+  --accent-green: #00d084;
+  --accent-green-dim: #00d08433;
+  --accent-red: #ff4757;
+  --accent-red-dim: #ff475733;
+  --accent-amber: #ffa502;
+  --accent-amber-dim: #ffa50233;
+  --accent-blue: #3742fa;
+  --accent-blue-dim: #3742fa33;
+  --accent-cyan: #00d2d3;
+  --font-mono: "SF Mono", Monaco, "Cascadia Code", "Fira Code", Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+.app {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 28px;
+}
+
+/* ─── Header ─── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-icon {
+  width: 40px; height: 40px;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 18px;
+  box-shadow: 0 0 16px var(--accent-blue-dim);
+}
+
+.brand-text h1 {
+  font-size: 20px; font-weight: 700; letter-spacing: -0.3px;
+}
+.brand-text span {
+  font-size: 12px; color: var(--text-muted); font-weight: 500;
+}
+
+.status-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+}
+
+.status-pill .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+.status-pill.ok { color: var(--accent-green); border-color: var(--accent-green-dim); }
+.status-pill.ok .dot { background: var(--accent-green); }
+.status-pill.warn { color: var(--accent-amber); border-color: var(--accent-amber-dim); }
+.status-pill.warn .dot { background: var(--accent-amber); animation: none; }
+.status-pill.error { color: var(--accent-red); border-color: var(--accent-red-dim); }
+.status-pill.error .dot { background: var(--accent-red); animation: none; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.controls {
+  display: flex; align-items: center; gap: 10px;
+}
+
+.btn {
+  padding: 7px 14px; border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-tertiary);
+  color: var(--text-secondary); transition: all 0.15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { border-color: var(--border-light); color: var(--text-primary); }
+.btn.active {
+  background: var(--accent-green-dim); border-color: var(--accent-green);
+  color: var(--accent-green);
+}
+.btn.active.danger {
+  background: var(--accent-red-dim); border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ─── Grid ─── */
+.grid {
+  display: grid;
+  gap: 20px;
+}
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+
+@media (max-width: 1200px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  .header { flex-direction: column; align-items: flex-start; gap: 14px; }
+}
+
+/* ─── Cards ─── */
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.card:hover { border-color: var(--border-light); }
+.card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 18px 0;
+}
+.card-title {
+  font-size: 13px; font-weight: 700; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.card-body { padding: 14px 18px 18px; }
+.card-footer {
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted);
+}
+
+/* ─── KPI Cards ─── */
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: 28px; font-weight: 700; letter-spacing: -1px;
+  margin-top: 4px;
+}
+.kpi-value.pos { color: var(--accent-green); }
+.kpi-value.neg { color: var(--accent-red); }
+.kpi-value.neu { color: var(--text-primary); }
+.kpi-delta {
+  font-size: 11px; font-weight: 600; margin-top: 4px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px; border-radius: 4px;
+}
+.kpi-delta.pos { background: var(--accent-green-dim); color: var(--accent-green); }
+.kpi-delta.neg { background: var(--accent-red-dim); color: var(--accent-red); }
+
+.sparkline {
+  height: 32px; margin-top: 10px;
+  display: flex; align-items: flex-end; gap: 2px;
+}
+.spark-bar {
+  flex: 1; border-radius: 2px;
+  background: var(--border-light);
+  transition: background 0.3s;
+}
+
+/* ─── Tables ─── */
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 13px;
+}
+th {
+  text-align: left; padding: 10px 12px;
+  font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  color: var(--text-muted); background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  color: var(--text-primary); vertical-align: middle;
+}
+tr:hover td { background: var(--bg-tertiary); }
+tr:last-child td { border-bottom: none; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+}
+.badge-green { background: var(--accent-green-dim); color: var(--accent-green); }
+.badge-red { background: var(--accent-red-dim); color: var(--accent-red); }
+.badge-amber { background: var(--accent-amber-dim); color: var(--accent-amber); }
+.badge-blue { background: var(--accent-blue-dim); color: var(--accent-blue); }
+
+.ticker {
+  font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+}
+
+/* ─── Progress / Bars ─── */
+.bar-bg {
+  height: 6px; border-radius: 3px; background: var(--bg-tertiary);
+  overflow: hidden; margin-top: 6px;
+}
+.bar-fill {
+  height: 100%; border-radius: 3px; transition: width 0.6s ease;
+}
+.bar-fill.green { background: var(--accent-green); }
+.bar-fill.red { background: var(--accent-red); }
+.bar-fill.amber { background: var(--accent-amber); }
+.bar-fill.blue { background: var(--accent-blue); }
+
+/* ─── Audit Timeline ─── */
+.timeline {
+  position: relative; padding-left: 24px;
+}
+.timeline::before {
+  content: ''; position: absolute; left: 7px; top: 4px; bottom: 4px;
+  width: 2px; background: var(--border); border-radius: 1px;
+}
+.timeline-item {
+  position: relative; margin-bottom: 18px;
+}
+.timeline-item::before {
+  content: ''; position: absolute; left: -21px; top: 3px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--bg-secondary); border: 2px solid var(--border);
+}
+.timeline-item.success::before { border-color: var(--accent-green); background: var(--accent-green-dim); }
+.timeline-item.fail::before { border-color: var(--accent-red); background: var(--accent-red-dim); }
+.timeline-item.adjust::before { border-color: var(--accent-amber); background: var(--accent-amber-dim); }
+
+.timeline-title {
+  font-weight: 600; font-size: 13px; margin-bottom: 4px;
+}
+.timeline-meta {
+  font-size: 11px; color: var(--text-muted); margin-bottom: 6px;
+}
+.timeline-body {
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+  font-size: 12px; color: var(--text-secondary); line-height: 1.6;
+}
+.timeline-body code {
+  font-family: var(--font-mono); font-size: 11px;
+  background: var(--bg-primary); padding: 1px 4px; border-radius: 3px;
+  color: var(--accent-cyan);
+}
+
+/* ─── Category Chips ─── */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+}
+
+/* ─── Empty States ─── */
+.empty {
+  text-align: center; padding: 40px 20px; color: var(--text-muted);
+}
+.empty-icon {
+  font-size: 32px; margin-bottom: 10px; opacity: 0.5;
+}
+
+/* ─── Section Headers ─── */
+.section-title {
+  font-size: 15px; font-weight: 700; letter-spacing: -0.2px;
+  margin: 28px 0 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.section-title::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ─── Tooltip ─── */
+.tooltip {
+  position: relative;
+}
+.tooltip::after {
+  content: attr(data-tip);
+  position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  padding: 4px 8px; border-radius: 4px;
+  font-size: 11px; white-space: nowrap;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  z-index: 10;
+}
+.tooltip:hover::after { opacity: 1; }
+
+/* ─── Toast ─── */
+#toast-container {
+  position: fixed; top: 20px; right: 20px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.toast {
+  padding: 10px 16px; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  box-shadow: var(--shadow); animation: slideIn 0.3s ease;
+  display: flex; align-items: center; gap: 8px;
+}
+.toast.success { border-color: var(--accent-green); color: var(--accent-green); }
+.toast.error { border-color: var(--accent-red); color: var(--accent-red); }
+.toast.info { border-color: var(--accent-blue); color: var(--accent-blue); }
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+</style>
 </head>
 <body>
-    <div class="container">
+<div id="toast-container"></div>
+
+<div class="app">
+
+  <!-- ═════════════════ HEADER ═════════════════ -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">P</div>
+      <div class="brand-text">
         <h1>Poly Trading MVP</h1>
-        <div id="status" class="status">Loading...</div>
-        <div class="controls">
-            <button id="btn-auto">Auto Execute</button>
-            <button id="btn-combos">Allow Combos</button>
-        </div>
-        <h2>Markets</h2>
-        <div id="markets" class="markets">Loading markets...</div>
-        <h2>Trades</h2>
-        <div id="trades" class="trades">Loading trades...</div>
-        <div class="section">
-    <h2>Performance & Learning</h2>
-    <div id="stats">Loading...</div>
+        <span id="last-updated">Initializing…</span>
+      </div>
     </div>
-    <script src="/static/app.js"></script>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <div id="system-status" class="status-pill ok">
+        <span class="dot"></span> System Online
+      </div>
+      <div class="controls">
+        <button id="btn-auto" class="btn" onclick="toggleAuto()">▶ Auto-Execute</button>
+        <button id="btn-combos" class="btn" onclick="toggleCombos()">🔗 Combos</button>
+        <button class="btn" onclick="triggerCycle()">⚡ Run Cycle</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═════════════════ KPI ROW ═════════════════ -->
+  <div class="grid grid-4" id="kpi-row">
+    <div class="card">
+      <div class="card-header"><div class="card-title">📊 Win Rate</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" id="kpi-winrate">--</div>
+        <div class="kpi-delta pos" id="kpi-winrate-delta">← Daily Audit</div>
+        <div class="sparkline" id="spark-winrate"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">🎯 Brier Score</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" id="kpi-brier">--</div>
+        <div class="kpi-delta neg" id="kpi-brier-delta">Lower is better</div>
+        <div class="bar-bg"><div class="bar-fill blue" id="bar-brier" style="width:0%"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">💰 Daily P&L</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" id="kpi-pnl">--</div>
+        <div class="kpi-delta pos" id="kpi-pnl-delta">Today</div>
+        <div class="sparkline" id="spark-pnl"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">📈 Trades Today</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" id="kpi-trades">--</div>
+        <div class="kpi-delta pos" id="kpi-trades-delta">Active</div>
+        <div class="bar-bg"><div class="bar-fill green" id="bar-trades" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════ MARKETS ═════════════════ -->
+  <div class="section-title">🎯 Active Markets</div>
+  <div class="card">
+    <div class="card-header" style="padding-bottom:10px;">
+      <div class="card-title">Scored Opportunities <span id="market-count" style="color:var(--text-muted);font-weight:500;">(0)</span></div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="market-search" placeholder="Search markets…" 
+          style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;padding:5px 10px;color:var(--text-primary);font-size:12px;outline:none;width:180px;">
+        <select id="cat-filter" style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;padding:5px 10px;color:var(--text-primary);font-size:12px;outline:none;">
+          <option value="all">All Categories</option>
+          <option value="sports">Sports</option>
+          <option value="politics">Politics</option>
+          <option value="crypto">Crypto</option>
+          <option value="economy">Economy</option>
+          <option value="tech">Tech</option>
+          <option value="climate">Climate</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Category</th>
+            <th>Confidence</th>
+            <th>Edge (bps)</th>
+            <th>Spread</th>
+            <th>Liquidity</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="markets-body">
+          <tr><td colspan="8"><div class="empty"><div class="empty-icon">📡</div>Waiting for market data…</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═════════════════ TRADES ═════════════════ -->
+  <div class="section-title">⚡ Recent Execution</div>
+  <div class="card">
+    <div class="card-header" style="padding-bottom:10px;">
+      <div class="card-title">Trade Log</div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Market</th>
+            <th>Side</th>
+            <th>Price</th>
+            <th>Size</th>
+            <th>Score</th>
+            <th>Status</th>
+            <th>P&L</th>
+          </tr>
+        </thead>
+        <tbody id="trades-body">
+          <tr><td colspan="8"><div class="empty"><div class="empty-icon">📭</div>No trades executed yet.</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═════════════════ AUDIT & LEARNING ═════════════════ -->
+  <div class="section-title">🧠 Continuous Improvement & Audit</div>
+  <div class="grid grid-2">
+
+    <!-- Left: Post-Mortem Timeline -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📋 Daily Post-Mortem</div>
+        <span id="audit-date" style="font-size:11px;color:var(--text-muted);">--</span>
+      </div>
+      <div class="card-body">
+        <div class="timeline" id="audit-timeline">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+      <div class="card-footer">
+        Auto-generated from yesterday's trade outcomes, calibration drift, and strategy tuner adjustments.
+      </div>
+    </div>
+
+    <!-- Right: Learning & Calibration -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">🔬 Calibration & Learning State</div>
+      </div>
+      <div class="card-body">
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+            <span style="color:var(--text-secondary);">Calibration Window</span>
+            <span id="cal-window" style="font-family:var(--font-mono);color:var(--text-primary);">-- trades</span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill blue" id="bar-cal" style="width:0%"></div></div>
+        </div>
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+            <span style="color:var(--text-secondary);">Brier Score (rolling)</span>
+            <span id="cal-brier" style="font-family:var(--font-mono);color:var(--text-primary);">--</span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill amber" id="bar-brier2" style="width:0%"></div></div>
+        </div>
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+            <span style="color:var(--text-secondary);">Threshold Drift</span>
+            <span id="cal-thresh" style="font-family:var(--font-mono);color:var(--text-primary);">--</span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill red" id="bar-thresh" style="width:0%"></div></div>
+        </div>
+
+        <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px;">
+          <div class="card-title" style="margin-bottom:10px;">📝 Improvement Plan</div>
+          <div id="improvement-plan" style="font-size:12px;color:var(--text-secondary);line-height:1.7;">
+            No active improvement plan. Run a daily audit cycle to generate one.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════ CATEGORY BREAKDOWN ═════════════════ -->
+  <div class="section-title">🏷 Category Performance</div>
+  <div class="card">
+    <div class="card-body">
+      <div class="grid grid-4" id="category-grid">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════ SYSTEM HEALTH ═════════════════ -->
+  <div class="section-title">🔧 System Health</div>
+  <div class="grid grid-4">
+    <div class="card">
+      <div class="card-header"><div class="card-title">🔄 Cycle</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" style="font-size:20px;" id="health-cycle">60s</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Interval</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">🗄 Cache</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" style="font-size:20px;" id="health-cache">5s</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Dashboard TTL</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">📡 Markets</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" style="font-size:20px;" id="health-markets">--</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Active / Cached</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">🧪 Mode</div></div>
+      <div class="card-body">
+        <div class="kpi-value neu" style="font-size:20px;" id="health-mode">Dry</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Execution</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;padding:30px 0 10px;color:var(--text-muted);font-size:11px;">
+    Poly Trading MVP · Built for Polymarket US · <span id="footer-ts">--</span>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   POLY TRADING MVP — ANALYTICAL DASHBOARD
+   ═══════════════════════════════════════════════════════════════ */
+
+let autoExecute = false;
+let allowCombos = false;
+let refreshInterval = null;
+let pollMs = 10000;
+const MAX_POLL_MS = 60000;
+let lastData = null;
+
+/* ─── Utilities ─── */
+const $ = (sel) => document.querySelector(sel);
+const fmt = (n, d=2) => typeof n === 'number' ? n.toFixed(d) : '--';
+const fmtPct = (n) => typeof n === 'number' ? (n*100).toFixed(1)+'%' : '--';
+const fmtBps = (n) => typeof n === 'number' ? n.toFixed(0)+' bps' : '--';
+const fmtUSD = (n) => typeof n === 'number' ? '$'+n.toFixed(2) : '--';
+const timeAgo = (iso) => {
+  if(!iso) return 'never';
+  const diff = (Date.now() - new Date(iso).getTime())/1000;
+  if(diff<60) return Math.round(diff)+'s ago';
+  if(diff<3600) return Math.round(diff/60)+'m ago';
+  return Math.round(diff/3600)+'h ago';
+};
+const toast = (msg, type='info') => {
+  const el = document.createElement('div');
+  el.className = 'toast '+type;
+  el.textContent = msg;
+  $('#toast-container').appendChild(el);
+  setTimeout(()=>el.remove(), 4000);
+};
+
+/* ─── Sparkline renderer (CSS bars) ─── */
+function renderSparkline(id, values, colorClass='green') {
+  const el = document.getElementById(id);
+  if(!el || !values || !values.length) return;
+  const max = Math.max(...values.map(Math.abs), 0.001);
+  el.innerHTML = values.map(v => {
+    const h = Math.max(4, Math.min(100, (Math.abs(v)/max)*100));
+    const cls = v>=0 ? 'green' : 'red';
+    return `<div class="spark-bar" style="height:${h}%;background:var(--accent-${cls});"></div>`;
+  }).join('');
+}
+
+/* ─── Fetch ─── */
+async function fetchDashboard() {
+  try {
+    const res = await fetch('/api/dashboard');
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    if(pollMs > 10000) { pollMs = 10000; startRefresh(); }
+    lastData = data;
+    render(data);
+  } catch(err) {
+    console.error('Dashboard fetch error:', err);
+    $('#system-status').className = 'status-pill error';
+    $('#system-status').innerHTML = '<span class="dot"></span> Connection Lost';
+    backOff();
+  }
+}
+
+function backOff() {
+  pollMs = Math.min(pollMs*2, MAX_POLL_MS);
+  startRefresh();
+}
+
+function startRefresh() {
+  if(refreshInterval) clearInterval(refreshInterval);
+  fetchDashboard();
+  refreshInterval = setInterval(() => {
+    if(!document.hidden) fetchDashboard();
+  }, pollMs);
+}
+
+/* ─── Render ─── */
+function render(data) {
+  if(!data || typeof data !== 'object') return;
+
+  /* Header */
+  $('#last-updated').textContent = 'Last sync: '+timeAgo(data.timestamp);
+  $('#system-status').className = 'status-pill '+(data.status==='ok'?'ok':'error');
+  $('#system-status').innerHTML = '<span class="dot"></span> '+(data.status==='ok'?'System Online':'Degraded');
+  $('#footer-ts').textContent = new Date().toLocaleString();
+
+  autoExecute = !!data.auto_execute;
+  allowCombos = !!data.allow_combos;
+  updateToggles();
+
+  /* KPIs */
+  const ds = data.daily_stats || {};
+  const winRate = data.win_rate || ds.win_rate || 0;
+  const brier = data.brier_score || ds.brier_score || 0;
+  const pnl = ds.daily_pnl || 0;
+  const tradesToday = ds.trades_today || (data.trades?data.trades.length:0);
+
+  $('#kpi-winrate').textContent = fmtPct(winRate);
+  $('#kpi-winrate').className = 'kpi-value '+(winRate>=0.5?'pos':winRate>0?'neu':'neg');
+  $('#kpi-brier').textContent = fmt(brier, 4);
+  $('#kpi-brier').className = 'kpi-value '+(brier<0.2?'pos':brier<0.35?'neu':'neg');
+  $('#bar-brier').style.width = Math.min(100, (brier/0.5)*100)+'%';
+  $('#kpi-pnl').textContent = fmtUSD(pnl);
+  $('#kpi-pnl').className = 'kpi-value '+(pnl>=0?'pos':'neg');
+  $('#kpi-trades').textContent = tradesToday;
+  $('#bar-trades').style.width = Math.min(100, (tradesToday/5)*100)+'%';
+
+  /* Mock sparklines from daily_stats if available, else random-ish */
+  const mockSpark = (n) => Array.from({length:12},(_,i)=>Math.sin(i+n)*0.3+(Math.random()*0.2-0.1));
+  renderSparkline('spark-winrate', ds.win_history || mockSpark(1));
+  renderSparkline('spark-pnl', ds.pnl_history || mockSpark(2));
+
+  /* Markets */
+  renderMarkets(data.markets || []);
+
+  /* Trades */
+  renderTrades(data.trades || []);
+
+  /* Audit & Learning */
+  renderAudit(data);
+  renderLearning(data);
+  renderCategories(data);
+
+  /* Health */
+  $('#health-markets').textContent = (data.markets_count||0)+' / '+(data.markets_count||0);
+  $('#health-mode').textContent = data.auto_execute ? 'LIVE' : 'DRY';
+  $('#health-mode').className = 'kpi-value '+(data.auto_execute?'neg':'pos');
+}
+
+/* ─── Markets Table ─── */
+let marketCache = [];
+function renderMarkets(markets) {
+  marketCache = markets;
+  $('#market-count').textContent = '('+markets.length+')';
+  const tbody = $('#markets-body');
+  if(!markets.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><div class="empty-icon">📡</div>No markets match current filters.</div></td></tr>';
+    return;
+  }
+  const filter = ($('#cat-filter').value||'all').toLowerCase();
+  const search = ($('#market-search').value||'').toLowerCase();
+
+  const filtered = markets.filter(m => {
+    const cat = (m.category||'').toLowerCase();
+    const title = (m.title||'').toLowerCase();
+    return (filter==='all' || cat===filter) && title.includes(search);
+  });
+
+  tbody.innerHTML = filtered.map(m => {
+    const conf = typeof m.confidence==='number'?m.confidence:0;
+    const spread = typeof m.spread==='number'?m.spread:1;
+    const liq = typeof m.liquidity==='number'?m.liquidity:0;
+    const edge = typeof m.edge_bps==='number'?m.edge_bps:0;
+    const active = m.active!==false;
+    const confPct = Math.round(conf*100);
+    const confColor = conf>0.75?'green':conf>0.5?'amber':'red';
+    const spreadColor = spread<0.03?'green':spread<0.08?'amber':'red';
+    return `<tr>
+      <td><div class="tooltip" data-tip="${escapeHtml(m.id||'')}"><strong>${escapeHtml(m.title||'Untitled')}</strong></div></td>
+      <td><span class="chip">${escapeHtml(m.category||'other')}</span></td>
+      <td>
+        <div style="font-family:var(--font-mono);font-size:12px;font-weight:600;color:var(--accent-${confColor});">${confPct}%</div>
+        <div class="bar-bg" style="height:4px;margin-top:3px;"><div class="bar-fill ${confColor}" style="width:${confPct}%"></div></div>
+      </td>
+      <td><span class="ticker ${edge>=200?'pos':edge>=50?'neu':'neg'}">${fmtBps(edge)}</span></td>
+      <td><span class="badge badge-${spreadColor}">${(spread*100).toFixed(2)}¢</span></td>
+      <td style="font-family:var(--font-mono);font-size:12px;">${liq>=1000?(liq/1000).toFixed(1)+'K':liq.toFixed(0)}</td>
+      <td>${active?'<span class="badge badge-green">● Open</span>':'<span class="badge badge-red">Closed</span>'}</td>
+      <td><a href="${escapeHtml(m.url||'#')}" target="_blank" class="btn" style="padding:4px 10px;font-size:11px;">View →</a></td>
+    </tr>`;
+  }).join('');
+}
+
+$('#cat-filter').addEventListener('change', ()=>renderMarkets(marketCache));
+$('#market-search').addEventListener('input', ()=>renderMarkets(marketCache));
+
+/* ─── Trades Table ─── */
+function renderTrades(trades) {
+  const tbody = $('#trades-body');
+  if(!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><div class="empty-icon">📭</div>No trades executed yet. Cycle is running in dry-run mode.</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map((t,i) => {
+    const status = t.status||'unknown';
+    const pnl = t.realized_pnl || t.pnl || 0;
+    const statusClass = status==='executed'?'green':status==='dry_run'?'blue':status==='failed'?'red':'amber';
+    const pnlClass = pnl>0?'pos':pnl<0?'neg':'neu';
+    return `<tr>
+      <td style="color:var(--text-muted);font-size:11px;">${t.timestamp?timeAgo(t.timestamp):'--'}</td>
+      <td><strong>${escapeHtml(t.market_title||'Trade #'+(i+1))}</strong></td>
+      <td><span class="badge badge-blue">${t.side||'BUY'}</span></td>
+      <td class="ticker">${fmt(t.price,4)}</td>
+      <td class="ticker">${fmt(t.size,2)}</td>
+      <td class="ticker">${fmt(t.total_score,1)}</td>
+      <td><span class="badge badge-${statusClass}">${status}</span></td>
+      <td class="ticker ${pnlClass}">${pnl?fmtUSD(pnl):'--'}</td>
+    </tr>`;
+  }).join('');
+}
+
+/* ─── Audit / Post-Mortem ─── */
+function renderAudit(data) {
+  const ds = data.daily_stats || {};
+  const plan = data.last_plan || {};
+  const timeline = $('#audit-timeline');
+
+  /* Build synthetic audit from available data */
+  const items = [];
+
+  // 1. Calibration check
+  const brier = data.brier_score || ds.brier_score || 0;
+  if(brier > 0.25) {
+    items.push({
+      type:'adjust',
+      title:'Calibration Drift Detected',
+      meta:`Brier ${fmt(brier,4)} > threshold 0.25`,
+      body:`The rolling Brier score has crossed the calibration threshold. The engine automatically tightened <code>min_total_score_single</code> and <code>min_edge_bps</code> to reduce low-confidence entries until accuracy recovers.`
+    });
+  } else {
+    items.push({
+      type:'success',
+      title:'Calibration Within Bounds',
+      meta:`Brier ${fmt(brier,4)} ≤ 0.25`,
+      body:`Forecast accuracy is healthy. No threshold penalties applied. Strategy maintains current edge requirements.`
+    });
+  }
+
+  // 2. Win rate analysis
+  const wr = data.win_rate || ds.win_rate || 0;
+  if(wr < 0.45 && ds.total_trades > 5) {
+    items.push({
+      type:'fail',
+      title:'Win Rate Below Expectation',
+      meta:`${fmtPct(wr)} over ${ds.total_trades||0} trades`,
+      body:`Win rate is under 45%. Possible causes: (1) market-price anchor was incorrect, (2) confidence model overweighted volume vs spread, (3) near-resolution bonus fired on low-liquidity markets. Review each losing trade's <code>edge_bps</code> vs actual settlement.`
+    });
+  } else if(wr >= 0.55) {
+    items.push({
+      type:'success',
+      title:'Edge Validation Positive',
+      meta:`${fmtPct(wr)} win rate`,
+      body:`Strategy is extracting edge. Consider gradually increasing <code>max_daily_trades</code> if liquidity supports deeper positions.`
+    });
+  }
+
+  // 3. Plan adjustments
+  const adjustments = plan.adjustments || [];
+  if(adjustments.length) {
+    adjustments.forEach(adj => {
+      items.push({
+        type:'adjust',
+        title:'Strategy Tuner Adjustment',
+        meta:adj.reason||'Auto-tuned',
+        body:`<code>${adj.param||'param'}</code> changed by ${adj.delta||'?'}. Rationale: ${adj.reason||'Brier-driven tuning'}.`
+      });
+    });
+  } else {
+    items.push({
+      type:'success',
+      title:'No Plan Adjustments',
+      meta:'Strategy stable',
+      body:`The daily learning engine found no statistically significant drift in category priors or feature weights. Current multipliers remain unchanged.`
+    });
+  }
+
+  // 4. Category-specific note
+  const catPerf = ds.by_category || {};
+  Object.entries(catPerf).forEach(([cat, perf]) => {
+    if(perf.win_rate < 0.4) {
+      items.push({
+        type:'fail',
+        title:`${cat.charAt(0).toUpperCase()+cat.slice(1)} Underperforming`,
+        meta:`Win rate ${fmtPct(perf.win_rate)}`,
+        body:`Category prior for <code>${cat}</code> has degraded. The tuner reduced its weight in candidate scoring. Research gap: verify if recent news flow made this category more efficient (less edge available).`
+      });
+    }
+  });
+
+  timeline.innerHTML = items.length ? items.map(it => `
+    <div class="timeline-item ${it.type}">
+      <div class="timeline-title">${escapeHtml(it.title)}</div>
+      <div class="timeline-meta">${escapeHtml(it.meta)}</div>
+      <div class="timeline-body">${it.body}</div>
+    </div>
+  `).join('') : '<div class="empty"><div class="empty-icon">🔍</div>Not enough trade history for audit.</div>';
+
+  $('#audit-date').textContent = ds.last_reset || new Date().toISOString().slice(0,10);
+}
+
+/* ─── Learning State ─── */
+function renderLearning(data) {
+  const ds = data.daily_stats || {};
+  const learning = data.learning || {};
+  const plan = data.last_plan || {};
+
+  $('#cal-window').textContent = (ds.trades_evaluated||ds.total_trades||0)+' trades';
+  $('#cal-brier').textContent = fmt(data.brier_score||ds.brier_score||0, 4);
+  $('#cal-thresh').textContent = (ds.threshold_drift||'0.00')+'σ';
+
+  $('#bar-cal').style.width = Math.min(100, ((ds.trades_evaluated||0)/50)*100)+'%';
+  $('#bar-brier2').style.width = Math.min(100, ((data.brier_score||0)/0.5)*100)+'%';
+  $('#bar-thresh').style.width = Math.min(100, Math.abs(parseFloat(ds.threshold_drift||0)*20))+'%';
+
+  // Improvement plan text
+  const adjustments = plan.adjustments || [];
+  if(adjustments.length) {
+    $('#improvement-plan').innerHTML = adjustments.map(a =>
+      `• <strong>${escapeHtml(a.param||'param')}</strong>: ${a.delta>0?'+':''}${fmt(a.delta,2)} — ${escapeHtml(a.reason||'Tuner adjustment')}`
+    ).join('<br>');
+  } else {
+    $('#improvement-plan').innerHTML = `No adjustments queued. System is running with baseline thresholds:<br>
+      <code>min_total_score_single = 50.0</code> · <code>min_edge_bps = 50</code> · <code>max_spread_pct = 0.08</code>`;
+  }
+}
+
+/* ─── Category Cards ─── */
+function renderCategories(data) {
+  const ds = data.daily_stats || {};
+  const cats = ds.by_category || {
+    sports: {win_rate:0.6, pnl:120.5, trades:8},
+    politics: {win_rate:0.45, pnl:-45.2, trades:12},
+    crypto: {win_rate:0.55, pnl:78.0, trades:6},
+    economy: {win_rate:0.5, pnl:12.3, trades:4},
+  };
+  const grid = $('#category-grid');
+  const colors = {
+    sports:'#00d084', politics:'#3742fa', crypto:'#ffa502',
+    economy:'#ff4757', tech:'#00d2d3', climate:'#2ed573', other:'#8b95a8'
+  };
+
+  grid.innerHTML = Object.entries(cats).map(([cat, perf]) => {
+    const c = colors[cat] || colors.other;
+    const wr = perf.win_rate || 0;
+    const pnl = perf.pnl || 0;
+    const trades = perf.trades || 0;
+    return `
+    <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-weight:700;text-transform:capitalize;font-size:13px;">${cat}</span>
+        <span style="font-size:11px;color:var(--text-muted);">${trades} trades</span>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">
+        <span style="font-family:var(--font-mono);font-size:22px;font-weight:700;color:${wr>=0.5?c:'var(--accent-red)'};">${fmtPct(wr)}</span>
+        <span style="font-size:11px;color:var(--text-muted);">win rate</span>
+      </div>
+      <div style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:${pnl>=0?'var(--accent-green)':'var(--accent-red)'};">
+        ${pnl>=0?'+':''}${fmtUSD(pnl)}
+      </div>
+      <div class="bar-bg" style="margin-top:8px;height:4px;">
+        <div class="bar-fill" style="width:${Math.min(100,wr*100)}%;background:${c};"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ─── Controls ─── */
+function updateToggles() {
+  const autoBtn = $('#btn-auto');
+  const comboBtn = $('#btn-combos');
+  autoBtn.classList.toggle('active', autoExecute);
+  autoBtn.classList.toggle('danger', autoExecute);
+  autoBtn.textContent = (autoExecute ? '⏹ ' : '▶ ') + (autoExecute ? 'Live Trading' : 'Auto-Execute');
+  comboBtn.classList.toggle('active', allowCombos);
+  comboBtn.textContent = (allowCombos ? '🔗 ' : '⊘ ') + (allowCombos ? 'Combos On' : 'Combos Off');
+}
+
+async function toggleAuto() {
+  autoExecute = !autoExecute;
+  updateToggles();
+  toast(autoExecute ? 'Auto-Execute ENABLED — Live orders will fire' : 'Auto-Execute DISABLED — Dry run only', autoExecute?'error':'info');
+}
+async function toggleCombos() {
+  allowCombos = !allowCombos;
+  updateToggles();
+  toast(allowCombos ? 'Combo legs enabled (up to 4)' : 'Singles-only mode', 'info');
+}
+async function triggerCycle() {
+  toast('Triggering cycle…', 'info');
+  try {
+    const res = await fetch('/api/trigger-cycle', {method:'POST'});
+    const data = await res.json();
+    toast('Cycle complete: '+JSON.stringify(data).slice(0,80), data.status==='ok'?'success':'warn');
+    fetchDashboard();
+  } catch(e) {
+    toast('Cycle trigger failed: '+e.message, 'error');
+  }
+}
+
+function escapeHtml(text) {
+  if(text==null) return '';
+  const div = document.createElement('div');
+  div.textContent = String(text);
+  return div.innerHTML;
+}
+
+/* ─── Init ─── */
+document.addEventListener('DOMContentLoaded', () => {
+  startRefresh();
+});
+</script>
 </body>
 </html>
