@@ -1,9 +1,8 @@
-"""Universe service: fetches and scores active Polymarket markets."""
 from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import httpx
 
@@ -20,7 +19,7 @@ class UniverseService:
         self.max_markets = int(os.getenv("MAX_MARKETS_FETCH", "3000"))
 
     async def get_active_markets(self):
-        stale = self._last_refresh is None or (datetime.utcnow() - self._last_refresh) > timedelta(minutes=5)
+        stale = self._last_refresh is None or (datetime.now(timezone.utc) - self._last_refresh) > timedelta(minutes=5)
         if stale or not self._markets:
             await self.refresh()
         return self._markets
@@ -29,7 +28,7 @@ class UniverseService:
         async with self._refresh_lock:
             raw = await self._fetch_raw()
             scored = [self._score(r) for r in raw]
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             active = [m for m in scored if m.ends_at > now and m.liquidity > 500 and m.spread < 0.10]
             self._markets = active
             self._last_refresh = now
@@ -63,11 +62,13 @@ class UniverseService:
     def _score(self, raw):
         cat = self._infer_category(raw.get("tags", []), raw.get("question", ""))
         confidence = self._compute_confidence(raw)
+
+        # FIX: always produce timezone-aware ends_at
         ends_at_str = (raw.get("endDate") or "2026-12-31T23:59:59Z").replace("Z", "+00:00")
         try:
             ends_at = datetime.fromisoformat(ends_at_str)
         except Exception:
-            ends_at = datetime(2026, 12, 31, 23, 59, 59)
+            ends_at = datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
         try:
             liquidity = float(raw.get("liquidity") or 0)

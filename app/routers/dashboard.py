@@ -1,12 +1,11 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 
 router = APIRouter()
 
 @router.get("/dashboard")
 async def dashboard(request: Request):
-    """Return dashboard data including markets, trades, and system status."""
     try:
         from app.main import universe, engine, cashout
         from app.config import settings
@@ -20,6 +19,7 @@ async def dashboard(request: Request):
     if universe is not None and hasattr(universe, "_markets"):
         raw = universe._markets
         items = raw if isinstance(raw, list) else []
+        now = datetime.now(timezone.utc)
         for market in items:
             if not hasattr(market, "id"):
                 continue
@@ -31,12 +31,11 @@ async def dashboard(request: Request):
                 "liquidity": market.liquidity,
                 "spread": round(market.spread, 4),
                 "url": market.url,
-                "active": market.ends_at > datetime.utcnow() if hasattr(market, "ends_at") else True,
+                "active": market.ends_at > now if hasattr(market, "ends_at") else True,
             })
             if len(markets) >= 50:
                 break
 
-    # Get recent trades from engine daily_stats if available
     trades = []
     daily_stats = {}
     if engine is not None and hasattr(engine, "daily_stats"):
@@ -44,7 +43,7 @@ async def dashboard(request: Request):
 
     return {
         "status": "ok",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "markets": markets,
         "markets_count": len(markets),
         "trades": trades,
