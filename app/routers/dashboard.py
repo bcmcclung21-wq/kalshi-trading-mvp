@@ -9,11 +9,13 @@ async def dashboard(request: Request):
     try:
         from app.main import universe, engine, cashout
         from app.config import settings
+        from app.strategy import TUNER
     except Exception:
         universe = None
         engine = None
         cashout = None
         settings = None
+        TUNER = None
 
     markets = []
     if universe is not None and hasattr(universe, "_markets"):
@@ -38,11 +40,21 @@ async def dashboard(request: Request):
 
     trades = []
     daily_stats = {}
+    brier_score = 0.0
+    win_rate = 0.0
+    learning_state = {}
+    last_plan = {}
+
     if engine is not None and hasattr(engine, "daily_stats"):
         daily_stats = engine.daily_stats
-        # Expose recent executed trades from daily_stats if available
+        brier_score = daily_stats.get("brier_score", 0.0)
+        win_rate = daily_stats.get("win_rate", 0.0)
         if "last_trades" in daily_stats:
             trades = daily_stats["last_trades"][:20]
+        last_plan = daily_stats.get("last_plan", {})
+
+    if TUNER is not None:
+        learning_state = TUNER.learning.to_dict()
 
     return {
         "status": "ok",
@@ -54,4 +66,8 @@ async def dashboard(request: Request):
         "balance": None,
         "auto_execute": settings.auto_execute if settings else False,
         "allow_combos": settings.allow_combos if settings else False,
+        "brier_score": brier_score,
+        "win_rate": win_rate,
+        "learning": learning_state,
+        "last_plan": last_plan,
     }
