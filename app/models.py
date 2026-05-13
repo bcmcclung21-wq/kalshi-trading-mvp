@@ -33,7 +33,7 @@ class Market(BaseModel):
     liquidity: float = 0.0
     spread: float = 1.0
     volume_24h: float = 0.0
-    market_price: float = 0.5
+    last_price: float = 0.5
     ends_at: datetime
     url: str = ""
     best_bid: float = 0.0

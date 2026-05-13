@@ -1,12 +1,10 @@
 from __future__ import annotations
 import logging
-logging.basicConfig(level=logging.WARNING, format="%(name)s %(levelname)s %(message)s")
-
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,8 +31,10 @@ async def _run_cycle_loop(engine: TradingEngine, interval_sec: int = 60):
             continue
         try:
             async with _cycle_lock:
-                result = await engine.run_cycle()
+                result = await asyncio.wait_for(engine.run_cycle(), timeout=300)
                 logger.info("cycle_complete: %s", result)
+        except asyncio.TimeoutError:
+            logger.error("cycle_timeout_exceeded_300s")
         except Exception as e:
             logger.exception("cycle_failed: %s", e)
 
@@ -43,8 +43,6 @@ async def _run_cycle_loop(engine: TradingEngine, interval_sec: int = 60):
 # ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api, universe, calibration, engine, cashout
-
     api = PolymarketAPI()
     universe = UniverseService()
     calibration = CalibrationService()
@@ -89,14 +87,15 @@ async def root():
     return FileResponse("static/index.html")
 
 @app.get("/api/health")
-async def health():
+async def health(request: Request):
+    universe = getattr(request.app.state, "universe", None)
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "markets_cached": len(universe._markets) if "universe" in globals() else 0,
+        "markets_cached": len(universe._markets) if universe else 0,
         "last_refresh": (
             universe._last_refresh.isoformat()
-            if "universe" in globals() and universe._last_refresh
+            if universe and universe._last_refresh
             else None
         ),
         "auto_execute": settings.auto_execute,
@@ -104,6 +103,9 @@ async def health():
     }
 
 @app.post("/api/trigger-cycle")
-async def trigger_cycle():
+async def trigger_cycle(request: Request):
+    engine = getattr(request.app.state, "engine", None)
+    if not engine:
+        return {"status": "error", "detail": "engine_not_ready"}
     result = await engine.run_cycle()
     return result

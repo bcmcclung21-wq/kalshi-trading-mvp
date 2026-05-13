@@ -4,8 +4,14 @@ from fastapi import APIRouter, Request
 
 router = APIRouter()
 
+_cache = {"ts": None, "payload": None}
+
 @router.get("/dashboard")
 async def dashboard(request: Request):
+    now = datetime.now(timezone.utc)
+    if _cache["ts"] and (now - _cache["ts"]).total_seconds() < 5:
+        return _cache["payload"]
+
     # Pull from app state instead of importing from main
     universe = getattr(request.app.state, "universe", None)
     engine   = getattr(request.app.state, "engine", None)
@@ -14,7 +20,7 @@ async def dashboard(request: Request):
 
     markets = []
     if universe is not None and hasattr(universe, "_markets"):
-        now = datetime.now(timezone.utc)
+        cutoff = now
         for market in universe._markets[:50]:
             if not hasattr(market, "id"):
                 continue
@@ -26,7 +32,7 @@ async def dashboard(request: Request):
                 "liquidity": market.liquidity,
                 "spread": round(market.spread, 4),
                 "url": market.url,
-                "active": market.ends_at > now if hasattr(market, "ends_at") else True,
+                "active": market.ends_at > cutoff if hasattr(market, "ends_at") else True,
             })
 
     trades = []
@@ -49,9 +55,9 @@ async def dashboard(request: Request):
     except Exception:
         pass
 
-    return {
+    payload = {
         "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
         "markets": markets,
         "markets_count": len(markets),
         "trades": trades,
@@ -64,3 +70,7 @@ async def dashboard(request: Request):
         "learning": learning_state,
         "last_plan": last_plan,
     }
+
+    _cache["ts"] = now
+    _cache["payload"] = payload
+    return payload

@@ -17,6 +17,11 @@ class UniverseService:
         self._refresh_lock = asyncio.Lock()
         self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com").rstrip("/")
         self.max_markets = int(os.getenv("MAX_MARKETS_FETCH", "800"))
+        self._client = httpx.AsyncClient(
+            timeout=30,
+            headers={"User-Agent": "PolyTradingMVP/1.1"},
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=5),
+        )
 
     async def get_active_markets(self):
         stale = self._last_refresh is None or (datetime.now(timezone.utc) - self._last_refresh) > timedelta(minutes=5)
@@ -38,13 +43,11 @@ class UniverseService:
     async def _fetch_raw(self):
         url = f"{self.gamma_base}/markets"
         markets, offset, limit = [], 0, 100
-        headers = {"User-Agent": "PolyTradingMVP/1.0"}
-        async with httpx.AsyncClient(timeout=30) as client:
-            while len(markets) < self.max_markets:
+        client = self._client
+        while len(markets) < self.max_markets:
                 try:
                     resp = await client.get(
                         url,
-                        headers=headers,
                         params={"limit": limit, "offset": offset, "closed": "false", "active": "true"}
                     )
                     resp.raise_for_status()
@@ -100,19 +103,16 @@ class UniverseService:
         except Exception:
             volume_24h = 0.0
 
-        spread = 0.05
-        market_price = 0.5
         best_bid = float(raw.get("bestBid", 0))
         best_ask = float(raw.get("bestAsk", 1))
+        last_price = float(raw.get("lastPrice", 0) or raw.get("price", 0) or 0)
+        if last_price == 0 and (best_bid > 0 or best_ask < 1):
+            last_price = (best_bid + best_ask) / 2.0
+
+        spread = 0.05
         try:
-            bid = best_bid
-            ask = best_ask
-            last = raw.get("lastPrice")
-            if isinstance(last, (int, float, str)):
-                market_price = float(last)
-            if ask > 0:
-                spread = (ask - bid) / ask
-                market_price = (bid + ask) / 2
+            if best_ask > 0:
+                spread = (best_ask - best_bid) / best_ask
         except Exception:
             pass
 
@@ -129,7 +129,7 @@ class UniverseService:
             liquidity=liquidity,
             spread=spread,
             volume_24h=volume_24h,
-            market_price=max(0.0, min(1.0, market_price)),
+            last_price=max(0.0, min(1.0, last_price)),
             ends_at=ends_at,
             url=url,
             best_bid=best_bid,
@@ -148,6 +148,8 @@ class UniverseService:
             return Category.SPORTS
         if any(k in text for k in ("economy", "gdp", "inflation", "unemployment", "fed", "interest rate", "recession")):
             return Category.ECONOMY
+        if any(k in text for k in ("climate", "weather", "temperature", "carbon", "emission", "warming")):
+            return Category.CLIMATE
         if any(k in text for k in ("tech", "ai", "apple", "google", "microsoft", "tesla", "elon", "chip")):
             return Category.TECH
         return Category.OTHER

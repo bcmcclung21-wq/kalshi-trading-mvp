@@ -159,13 +159,10 @@ class TradingEngine:
             if spread > max_spread or liquidity < 500:
                 continue
 
-            try:
-                if hasattr(m, "best_bid") and hasattr(m, "best_ask"):
-                    market_price = (m.best_bid + m.best_ask) / 2.0
-                else:
-                    market_price = float(m.get("last_price", 0.5)) if not hasattr(m, "last_price") else m.last_price
-            except Exception:
-                market_price = 0.5
+            if hasattr(m, "spread"):
+                market_price = getattr(m, "last_price", 0.5) or 0.5
+            else:
+                market_price = m.get("last_price", 0.5) or 0.5
             try:
                 fair_prob = confidence
                 edge_bps = int(abs(fair_prob - market_price) * 10000)
