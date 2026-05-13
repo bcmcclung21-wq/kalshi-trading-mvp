@@ -79,21 +79,22 @@ class PolymarketAPI:
 
     async def get_positions(self, limit=100):
         data_url = f"{self.data_base}/positions"
-        gamma_url = f"{self.gamma_base}/positions"
 
-        if self.wallet_address:
-            data_params = {"user": self.wallet_address, "limit": limit}
-            logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
-            d = await self.fetch_with_retry(data_url, params=data_params)
-        else:
-            logger.info("fetching_positions source=gamma-api limit=%s", limit)
-            d = await self.fetch_with_retry(gamma_url, params={"limit": limit})
+        if not self.wallet_address:
+            logger.warning(
+                "positions_fetch_skipped reason=missing_wallet data_api_requires_user_param limit=%s",
+                limit,
+            )
+            return []
 
+        data_params = {"user": self.wallet_address, "limit": limit}
+        logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
+        d = await self.fetch_with_retry(data_url, params=data_params)
         return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
 
     async def get_trades(self, limit=100):
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.get(f"{self.data_base}/v1/portfolio/trades", params={"limit": limit})
+            r = await c.get(f"{self.data_base}/trades", params={"limit": limit})
             r.raise_for_status()
             d = r.json()
             return (d.get("trades", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
