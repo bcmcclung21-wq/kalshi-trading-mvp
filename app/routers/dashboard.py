@@ -10,23 +10,37 @@ router = APIRouter()
 @router.get('/dashboard')
 async def dashboard(request: Request):
     """Return dashboard data including markets, trades, and system status."""
-    from app.main import universe
+    try:
+        from app.main import universe
+    except Exception:
+        universe = None
 
-    markets = []
-    if universe and hasattr(universe, '_markets'):
-        markets = [
-            {
-                'id': m.get('id', ''),
-                'title': m.get('title', ''),
-                'category': m.get('category', ''),
-                'slug': m.get('slug', ''),
-                'url': m.get('url', ''),
-                'active': m.get('active', True),
-                'closed': m.get('closed', False),
-            }
-            for m in universe._markets.values()
-            if isinstance(m, dict)
-        ][:50]
+    markets: list[dict] = []
+    if universe is not None and hasattr(universe, '_markets'):
+        raw = universe._markets
+        if isinstance(raw, dict):
+            items = raw.values()
+        elif isinstance(raw, list):
+            items = raw
+        else:
+            items = []
+
+        for market in items:
+            if not isinstance(market, dict):
+                continue
+            markets.append(
+                {
+                    'id': market.get('id', ''),
+                    'title': market.get('title', 'Untitled'),
+                    'category': market.get('category', 'unknown'),
+                    'slug': market.get('slug', ''),
+                    'url': market.get('url', ''),
+                    'active': market.get('active', True),
+                    'closed': market.get('closed', False),
+                }
+            )
+            if len(markets) >= 50:
+                break
 
     return {
         'status': 'ok',
