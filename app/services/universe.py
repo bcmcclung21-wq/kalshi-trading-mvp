@@ -12,16 +12,17 @@ logger = logging.getLogger("app.services.universe")
 
 class UniverseService:
     def __init__(self):
-        self._markets: List[Market] = []
-        self._last_refresh: Optional[datetime] = None
+        self._markets = []
+        self._last_refresh = None
         self._refresh_lock = asyncio.Lock()
         self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com").rstrip("/")
         self.max_markets = int(os.getenv("MAX_MARKETS_FETCH", "800"))
         self._client = httpx.AsyncClient(
             timeout=30,
-            headers={"User-Agent": "PolyTradingMVP/1.1"},
-            limits=httpx.Limits(max_connections=5, max_keepalive_connections=5),
+            headers={"User-Agent": "PolyTradingMVP/1.2"},
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=10),
         )
+        self._orderbooks = {}
 
     async def get_active_markets(self):
         stale = self._last_refresh is None or (datetime.now(timezone.utc) - self._last_refresh) > timedelta(minutes=5)
@@ -37,89 +38,89 @@ class UniverseService:
             active = [m for m in scored if m.ends_at > now and m.liquidity > 500 and m.spread < 0.10]
             self._markets = active
             self._last_refresh = now
-            logger.warning("universe_refresh_complete raw=%d active=%d", len(raw), len(active))
+            await self._fetch_orderbooks_for_active()
+            logger.warning("universe_refresh_complete raw=%d active=%d orderbooks=%d", len(raw), len(active), len(self._orderbooks))
             return active
 
     async def _fetch_raw(self):
         url = f"{self.gamma_base}/markets"
         markets, offset, limit = [], 0, 100
-        client = self._client
         while len(markets) < self.max_markets:
-                try:
-                    resp = await client.get(
-                        url,
-                        params={"limit": limit, "offset": offset, "closed": "false", "active": "true"}
-                    )
-                    resp.raise_for_status()
-                    payload = resp.json()
-
-                    # FIX: handle both raw list and wrapped dict responses
-                    if isinstance(payload, list):
-                        data = payload
-                    elif isinstance(payload, dict):
-                        data = payload.get("markets") or payload.get("data") or payload.get("results") or []
-                    else:
-                        logger.warning("unexpected_api_response_type type=%s", type(payload).__name__)
-                        break
-
-                    if not data:
-                        break
-
-                    markets.extend(data)
-                    if len(data) < limit:
-                        break
-                    offset += limit
-                    await asyncio.sleep(0.15)
-
-                except httpx.HTTPStatusError as e:
-                    logger.warning("api_http_error status=%d", e.response.status_code)
-                    if e.response.status_code == 429:
-                        return markets
-                    raise
-                except Exception as e:
-                    logger.warning("api_fetch_error: %s", e)
+            try:
+                resp = await self._client.get(url, params={"limit": limit, "offset": offset, "closed": "false", "active": "true"})
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, list):
+                    data = payload
+                elif isinstance(payload, dict):
+                    data = payload.get("markets") or payload.get("data") or payload.get("results") or []
+                else:
+                    break
+                if not data:
+                    break
+                markets.extend(data)
+                if len(data) < limit:
+                    break
+                offset += limit
+                await asyncio.sleep(0.15)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
                     return markets
-
+                raise
+            except Exception:
+                return markets
         logger.warning("fetch_raw_complete count=%d", len(markets))
         return markets
+
+    async def _fetch_orderbooks_for_active(self):
+        top_markets = sorted(self._markets, key=lambda m: m.liquidity, reverse=True)[:50]
+        for m in top_markets:
+            try:
+                slug = m.id if m.id else ""
+                if not slug:
+                    continue
+                resp = await self._client.get(f"{self.gamma_base}/orderbook/{slug}", timeout=10)
+                if resp.status_code == 200:
+                    self._orderbooks[slug] = resp.json()
+                else:
+                    self._orderbooks.pop(slug, None)
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.debug("orderbook_fetch_failed %s: %s", slug, e)
+
+    def get_orderbook(self, market_id: str) -> dict:
+        return self._orderbooks.get(market_id, {})
 
     def _score(self, raw):
         cat = self._infer_category(raw.get("tags", []), raw.get("question", ""))
         confidence = self._compute_confidence(raw)
-
         ends_at_str = (raw.get("endDate") or "2026-12-31T23:59:59Z").replace("Z", "+00:00")
         try:
             ends_at = datetime.fromisoformat(ends_at_str)
         except Exception:
             ends_at = datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
-
         try:
             liquidity = float(raw.get("liquidity") or 0)
         except Exception:
             liquidity = 0.0
-
         try:
             volume_24h = float(raw.get("volume24h") or raw.get("volume") or 0)
         except Exception:
             volume_24h = 0.0
-
         best_bid = float(raw.get("bestBid", 0))
         best_ask = float(raw.get("bestAsk", 1))
         last_price = float(raw.get("lastPrice", 0) or raw.get("price", 0) or 0)
         if last_price == 0 and (best_bid > 0 or best_ask < 1):
             last_price = (best_bid + best_ask) / 2.0
-
         spread = 0.05
         try:
             if best_ask > 0:
                 spread = (best_ask - best_bid) / best_ask
         except Exception:
             pass
-
         slug = raw.get("slug", "")
         mid = raw.get("id", "")
         url = f"https://polymarket.com/event/{slug}" if slug else f"https://polymarket.com/market/{mid}"
-
         return Market(
             id=mid or slug or "unknown",
             title=raw.get("question") or raw.get("title") or "Untitled",
@@ -159,12 +160,9 @@ class UniverseService:
         score = 0.5
         try:
             vol = float(raw.get("volume24h") or raw.get("volume") or 0)
-            if vol > 100000:
-                score += 0.15
-            elif vol > 50000:
-                score += 0.10
-            elif vol > 10000:
-                score += 0.05
+            if vol > 100000: score += 0.15
+            elif vol > 50000: score += 0.10
+            elif vol > 10000: score += 0.05
         except Exception:
             pass
         return min(1.0, score)
