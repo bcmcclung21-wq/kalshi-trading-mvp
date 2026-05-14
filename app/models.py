@@ -19,7 +19,7 @@ class Category(str, Enum):
     POLITICS = "politics"
     CRYPTO = "crypto"
     CLIMATE = "climate"
-    ECONOMY = "economy"
+    ECONOMY = "economics"
     TECH = "tech"
     OTHER = "other"
 
@@ -43,6 +43,8 @@ class Market(BaseModel):
     close_time: str | None = None
     tags: list = []
     question: str = ""
+    minutes_to_close: float | None = None
+    _raw: dict = {}
 
 
 class MarketSnapshot(Base):

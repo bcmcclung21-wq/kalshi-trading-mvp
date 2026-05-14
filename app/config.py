@@ -36,11 +36,12 @@ class Settings(BaseSettings):
 
     polymarket_api_base_url: str = "https://api.polymarket.us"
     polymarket_gateway_base_url: str = "https://gateway.polymarket.us"
+    polymarket_clob_base_url: str = "https://clob.polymarket.com"
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
 
-    auto_execute: bool = os.getenv("DRY_MODE", "false").strip().lower() != "true"
-    dry_run: bool = os.getenv("DRY_MODE", "false").strip().lower() == "true"
+    auto_execute: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() == "true"
+    dry_run: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() != "true"
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
     same_day_only: bool = True

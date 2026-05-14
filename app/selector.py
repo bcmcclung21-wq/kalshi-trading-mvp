@@ -172,7 +172,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "missing_close_time": 0,
         "packaged_market": 0,
     }
-    valid_categories = {"sports", "politics", "crypto", "climate", "economics", "tech", "other", "entertainment", "science", "business"}
+    valid_categories = {"sports", "politics", "crypto", "climate", "economics", "economy", "tech", "other", "entertainment", "science", "business"}
     now = datetime.now(timezone.utc)
     today_market_tz = datetime.now(MARKET_TZ).date()
     today_utc = datetime.now(timezone.utc).date()
@@ -229,6 +229,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             if minutes is None:
                 rejects["missing_close_time"] += 1
                 continue
+        market["minutes_to_close"] = minutes
         if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
             continue

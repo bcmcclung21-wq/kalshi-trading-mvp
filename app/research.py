@@ -174,7 +174,7 @@ def build_research_envelope(
 
         has_yes_pair = yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid
         spread_ok = spread_cents <= 6.0
-        near_term_ok = (minutes_to_close is not None) and (20.0 <= float(minutes_to_close) <= (36.0 * 60.0))
+        near_term_ok = (minutes_to_close is not None) and (float(minutes_to_close) >= 20.0)
         if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0:
             midpoint = max(0.01, min(0.99, (yes_bid + yes_ask) / 2.0))
             fair_probability, edge = compute_side_edge(side, entry_price, midpoint)
