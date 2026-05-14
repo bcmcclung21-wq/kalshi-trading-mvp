@@ -44,7 +44,7 @@ class Market(BaseModel):
     tags: list = []
     question: str = ""
     minutes_to_close: float | None = None
-    _raw: dict = Field(default_factory=dict, repr=False)
+    raw: dict = Field(default_factory=dict, repr=False)
 
 
 class MarketSnapshot(Base):
