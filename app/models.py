@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,7 +44,7 @@ class Market(BaseModel):
     tags: list = []
     question: str = ""
     minutes_to_close: float | None = None
-    _raw: dict = {}
+    _raw: dict = Field(default_factory=dict, repr=False)
 
 
 class MarketSnapshot(Base):

@@ -103,7 +103,7 @@ class TradingEngine:
                 if cand:
                     candidates.append(cand)
                 else:
-                    logger.info("candidate_rejected ticker=%s reason=%s", m.get("ticker"), reason)
+                    logger.debug("candidate_rejected ticker=%s reason=%s", m.get("ticker"), reason)
 
             if not candidates:
                 logger.warning("no_candidates_after_build pool=%d", len(pool))
@@ -208,18 +208,11 @@ class TradingEngine:
         auto_execute = settings.auto_execute
         dry_run = not auto_execute
 
-        balance = 0.0
-        if auto_execute:
-            try:
-                balances = await self.api.get_balances()
-                if isinstance(balances, dict):
-                    balance = float(balances.get("usable", 0) or balances.get("balance", 0) or 0)
-            except Exception as e:
-                logger.warning("balance_check_failed: %s", e)
-
+        # STRICT bankroll percentage sizing — NO OVERRIDE ALLOWED
         for sel in selected:
             price = sel.entry_price
             legs = sel.legs
+
             if legs == 1:
                 risk_pct = 0.02
             elif legs == 2:
@@ -228,24 +221,34 @@ class TradingEngine:
                 risk_pct = 0.0075
             else:
                 risk_pct = 0.005
+
             bankroll = settings.bankroll_usd
-            max_risk = min(thresholds.get("max_risk_per_trade_usd", 50.0), bankroll * risk_pct)
+            max_risk = bankroll * risk_pct
             size = max_risk / max(price, 0.01)
             size = min(size, 100.0)
             token_id = sel.details.get("token_id") if sel.details else None
-            info = {"market_id": sel.ticker, "market_title": sel.ticker, "side": sel.side, "price": round(price, 4), "size": round(size, 4), "total_score": sel.total_score, "edge_bps": int(sel.spread_cents * 100), "predicted_prob": sel.details.get("fair_probability", price) if sel.details else price, "confidence": sel.confidence_score / 100.0, "category": sel.category, "token_id": token_id}
 
-            if auto_execute and balance < max_risk:
-                info.update({"status": "skipped", "error": "insufficient_balance"})
-                executed.append(info)
-                continue
+            info = {
+                "market_id": sel.ticker,
+                "market_title": sel.ticker,
+                "side": sel.side,
+                "price": round(price, 4),
+                "size": round(size, 4),
+                "total_score": sel.total_score,
+                "edge_bps": int(sel.spread_cents * 100),
+                "predicted_prob": sel.details.get("fair_probability", price) if sel.details else price,
+                "confidence": sel.confidence_score / 100.0,
+                "category": sel.category,
+                "token_id": token_id,
+                "risk_usd": round(max_risk, 2),
+                "risk_pct": risk_pct,
+            }
 
             if not dry_run and auto_execute and token_id:
                 try:
                     result = await self.api.place_order(token_id, sel.side, size, price)
                     info.update({"status": "executed", "order_id": result.get("id", "")})
                     self.daily_stats["trades_today"] += 1
-                    balance -= max_risk
                 except Exception as e:
                     info.update({"status": "failed", "error": str(e)})
             elif not dry_run and auto_execute and not token_id:

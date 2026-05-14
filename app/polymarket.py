@@ -1,9 +1,16 @@
 from __future__ import annotations
+
 import asyncio
-import logging, os
+import logging
+import os
+
 import httpx
+
 from app.config import WALLET_ADDRESS
+
 logger = logging.getLogger("app.polymarket")
+
+
 class PolymarketAPI:
     def __init__(self):
         self.api_key = os.getenv("POLYMARKET_KEY_ID", "")
@@ -14,6 +21,7 @@ class PolymarketAPI:
         self.api_base = os.getenv("POLYMARKET_API_BASE", "https://api.polymarket.us")
         self.clob_base = os.getenv("POLYMARKET_CLOB_BASE", "https://clob.polymarket.com")
         self.wallet_address = WALLET_ADDRESS
+
         self.headers = {}
         if self.api_key:
             self.headers["POLYMARKET-API-KEY"] = self.api_key
@@ -24,7 +32,10 @@ class PolymarketAPI:
 
     async def get_markets(self, limit=100, offset=0, closed=False, tag=None):
         async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(f"{self.gamma_base}/markets", params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})})
+            r = await c.get(
+                f"{self.gamma_base}/markets",
+                params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})},
+            )
             r.raise_for_status()
             return r.json()
 
@@ -56,13 +67,18 @@ class PolymarketAPI:
                     return r.json()
             except httpx.HTTPStatusError as e:
                 request_url = str(e.request.url) if e.request else url
-                logger.warning("polymarket_request_failed status=%s url=%s response=%s", e.response.status_code if e.response else "unknown", request_url, (e.response.text[:500] if e.response else ""))
+                logger.warning(
+                    "polymarket_request_failed status=%s url=%s response=%s",
+                    e.response.status_code if e.response else "unknown",
+                    request_url,
+                    (e.response.text[:500] if e.response else ""),
+                )
                 if e.response.status_code == 404:
                     raise
                 last_error = e
             except httpx.HTTPError as e:
                 last_error = e
-            await asyncio.sleep(2 ** i)
+            await asyncio.sleep(2**i)
         if last_error:
             raise last_error
         return None
@@ -90,7 +106,14 @@ class PolymarketAPI:
             trade_side = "BUY"
         elif trade_side == "NO":
             trade_side = "SELL"
-        payload = {"token_id": token_id, "side": trade_side, "size": float(size), "price": float(price), "type": "limit"}
+
+        payload = {
+            "token_id": token_id,
+            "side": trade_side,
+            "size": float(size),
+            "price": float(price),
+            "type": "limit",
+        }
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
             r = await c.post(f"{self.clob_base}/order", json=payload)
             r.raise_for_status()
@@ -103,7 +126,13 @@ class PolymarketAPI:
             return r.json()
 
     async def sell_position(self, token_id: str, outcome: str, size: float):
-        payload = {"token_id": token_id, "side": "SELL", "size": float(size), "price": 0.01, "type": "limit"}
+        payload = {
+            "token_id": token_id,
+            "side": "SELL",
+            "size": float(size),
+            "price": 0.01,
+            "type": "limit",
+        }
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
             r = await c.post(f"{self.clob_base}/order", json=payload)
             r.raise_for_status()

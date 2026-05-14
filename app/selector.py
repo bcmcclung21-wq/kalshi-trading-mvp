@@ -219,6 +219,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
 
         close_dt = _parse_close_dt(market)
         minutes = _best_effort_minutes(market, close_dt, now)
+        market["minutes_to_close"] = minutes
         if minutes is None:
             # Final fallback: try ends_at directly
             ends_at = market.get("ends_at")
@@ -226,7 +227,8 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
                 if ends_at.tzinfo is None:
                     ends_at = ends_at.replace(tzinfo=timezone.utc)
                 minutes = (ends_at.astimezone(timezone.utc) - now).total_seconds() / 60.0
-            if minutes is None:
+            market["minutes_to_close"] = minutes
+        if minutes is None:
                 rejects["missing_close_time"] += 1
                 continue
         market["minutes_to_close"] = minutes

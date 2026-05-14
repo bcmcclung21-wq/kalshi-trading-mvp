@@ -196,6 +196,10 @@ class FallbackMidpointModel(BaseProjectionModel):
         else:
             mid = 0.5
             conf = 0.3
+
+        liquidity = float((market_data or {}).get("liquidity", 0) or 0)
+        if liquidity < 1000 and mid > 0.1:
+            mid *= 0.98
         return ProjectionResult(
             fair_value=max(0.01, min(0.99, mid)),
             confidence=conf,
