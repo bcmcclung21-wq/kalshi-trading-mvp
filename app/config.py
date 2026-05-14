@@ -1,6 +1,29 @@
 from __future__ import annotations
 from pathlib import Path
+import os
+from eth_account import Account
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+
+def get_wallet_address() -> str:
+    """Derive wallet address from PRIVATE_KEY env var."""
+    pk = os.getenv("PRIVATE_KEY", "").strip()
+    if not pk:
+        raise ValueError("PRIVATE_KEY env var not set")
+    pk = pk.removeprefix("0x") if pk.startswith("0x") else pk
+    return Account.from_key(pk).address
+
+
+def resolve_wallet_address() -> str:
+    """Return explicit POLYMARKET_WALLET_ADDRESS override, else derive from PRIVATE_KEY."""
+    override = os.getenv("POLYMARKET_WALLET_ADDRESS", "").strip()
+    if override:
+        return override
+    try:
+        return get_wallet_address()
+    except Exception:
+        return ""
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(case_sensitive=False, extra="ignore")
@@ -50,3 +73,6 @@ class Settings(BaseSettings):
     max_risk_per_trade_usd: float = 50.0
 
 settings = Settings()
+
+
+WALLET_ADDRESS = resolve_wallet_address()
