@@ -94,9 +94,9 @@ class StrategyTuner:
     def get_feature_weight(self, name: str) -> float: return self.learning.feature_weights.get(name, 1.0)
 
 TUNER = StrategyTuner()
-BASE_MIN_TOTAL_SCORE_SINGLE = _env_float("MIN_TOTAL_SCORE_SINGLE", 50.0)
-BASE_MIN_TOTAL_SCORE_MULTI = _env_float("MIN_TOTAL_SCORE_MULTI", 45.0)
-MIN_EDGE_BPS = _env_int("MIN_EDGE_BPS", 50)
+BASE_MIN_TOTAL_SCORE_SINGLE = _env_float("MIN_TOTAL_SCORE_SINGLE", 35.0)
+BASE_MIN_TOTAL_SCORE_MULTI = _env_float("MIN_TOTAL_SCORE_MULTI", 30.0)
+MIN_EDGE_BPS = _env_int("MIN_EDGE_BPS", 15)
 MIN_FAIR_PROB_GAP = _env_float("MIN_FAIR_PROB_GAP", 0.01)
 MAX_SPREAD_PCT = _env_float("MAX_SPREAD_PCT", 0.08)
 MAX_EV_LOSS_PCT = _env_float("MAX_EV_LOSS_PCT", 0.03)

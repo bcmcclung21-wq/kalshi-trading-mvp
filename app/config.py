@@ -66,10 +66,10 @@ class Settings(BaseSettings):
     cashout_tp3_pct: float = 100.0
     cashout_tp3_size_pct: float = 30.0
 
-    # Strategy thresholds (also defined in strategy.py — keep in sync)
-    min_total_score_single: float = 50.0
-    min_total_score_multi: float = 45.0
-    min_edge_bps: int = 50
+    # OPTIMAL: Lowered thresholds for more trading opportunities
+    min_total_score_single: float = 35.0
+    min_total_score_multi: float = 30.0
+    min_edge_bps: int = 15
     max_spread_pct: float = 0.08
     max_daily_trades: int = 5
     max_risk_per_trade_usd: float = 50.0

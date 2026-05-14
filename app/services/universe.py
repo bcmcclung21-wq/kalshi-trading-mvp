@@ -147,12 +147,18 @@ class UniverseService:
     async def _fetch_orderbooks_for_active(self):
         self._orderbooks = {}
         markets_to_fetch = self._markets[:100]
+
         for m in markets_to_fetch:
             try:
                 token_id = self._get_yes_token_id(m)
                 if not token_id:
                     continue
-                resp = await self._client.get(f"{self.clob_base}/book", params={"token_id": token_id}, timeout=10)
+
+                resp = await self._client.get(
+                    f"{self.clob_base}/book",
+                    params={"token_id": token_id},
+                    timeout=10,
+                )
                 if resp.status_code == 200:
                     data = resp.json()
                     orderbook = self._convert_clob_orderbook(data, token_id, m)
@@ -186,7 +192,12 @@ class UniverseService:
     def _convert_clob_orderbook(self, data: dict, token_id: str, market: Market) -> dict:
         bids = data.get("bids", [])
         asks = data.get("asks", [])
-        yes_bids, yes_asks, no_bids, no_asks = [], [], [], []
+
+        yes_bids = []
+        yes_asks = []
+        no_bids = []
+        no_asks = []
+
         raw = getattr(market, "_raw", {}) or {}
         tokens = raw.get("clobTokenIds", [])
         if isinstance(tokens, str):
@@ -196,20 +207,37 @@ class UniverseService:
                 tokens = json.loads(tokens)
             except Exception:
                 tokens = [tokens]
-        is_yes_token = isinstance(tokens, list) and len(tokens) > 0 and str(tokens[0]) == str(token_id)
+
+        is_yes_token = False
+        if isinstance(tokens, list) and len(tokens) > 0:
+            is_yes_token = str(tokens[0]) == str(token_id)
 
         for bid in bids:
             price = float(bid.get("price", 0))
             size = float(bid.get("size", 0))
             if price > 0 and size > 0:
-                (yes_bids if is_yes_token else no_bids).append({"price": price, "size": size})
+                if is_yes_token:
+                    yes_bids.append({"price": price, "size": size})
+                else:
+                    no_bids.append({"price": price, "size": size})
+
         for ask in asks:
             price = float(ask.get("price", 0))
             size = float(ask.get("size", 0))
             if price > 0 and size > 0:
-                (yes_asks if is_yes_token else no_asks).append({"price": price, "size": size})
+                if is_yes_token:
+                    yes_asks.append({"price": price, "size": size})
+                else:
+                    no_asks.append({"price": price, "size": size})
 
-        return {"yes_bids": yes_bids, "yes_asks": yes_asks, "no_bids": no_bids, "no_asks": no_asks, "token_id": token_id, "source": "clob_api"}
+        return {
+            "yes_bids": yes_bids,
+            "yes_asks": yes_asks,
+            "no_bids": no_bids,
+            "no_asks": no_asks,
+            "token_id": token_id,
+            "source": "clob_api",
+        }
 
     def get_orderbook(self, market_id: str) -> dict:
         return self._orderbooks.get(market_id, {})
@@ -222,6 +250,7 @@ class UniverseService:
             ends_at = datetime.fromisoformat(ends_at_str)
         except Exception:
             ends_at = datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+
         try:
             liquidity = float(raw.get("liquidity") or 0)
         except Exception:
@@ -230,18 +259,25 @@ class UniverseService:
             volume_24h = float(raw.get("volume24h") or raw.get("volume") or 0)
         except Exception:
             volume_24h = 0.0
+
         best_bid = float(raw.get("bestBid", 0))
         best_ask = float(raw.get("bestAsk", 1))
         last_price = float(raw.get("lastPrice", 0) or raw.get("price", 0) or 0)
         if last_price == 0 and (best_bid > 0 or best_ask < 1):
             last_price = (best_bid + best_ask) / 2.0
+
         spread = best_ask - best_bid
+
         slug = raw.get("slug", "")
         mid = raw.get("id", "")
         url = f"https://polymarket.com/event/{slug}" if slug else f"https://polymarket.com/market/{mid}"
         close_time = raw.get("close_time") or raw.get("expiration_time") or raw.get("endDate")
+
         now = datetime.now(timezone.utc)
-        minutes_to_close = (ends_at - now).total_seconds() / 60.0 if ends_at > now else None
+        minutes_to_close = None
+        if ends_at > now:
+            minutes_to_close = (ends_at - now).total_seconds() / 60.0
+
         return Market(
             id=mid or slug or "unknown",
             title=raw.get("question") or raw.get("title") or "Untitled",
