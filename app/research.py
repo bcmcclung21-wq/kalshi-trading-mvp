@@ -10,6 +10,8 @@ from app.learning import bucket_features, get_learning_engine
 from app.projection_registry import project as project_market
 
 logger = logging.getLogger("app.research")
+MAX_SANE_EDGE = 0.50
+MIN_SANE_EDGE = -0.50
 
 @dataclass(slots=True)
 class ResearchEnvelope:
@@ -64,6 +66,18 @@ def infer_band_probability(price_points: list[float]) -> float:
 def compute_side_edge(side: str, entry_price: float, bin_probability: float) -> tuple[float, float]:
     fair = bin_probability if side == "YES" else (1.0 - bin_probability)
     return fair, fair - entry_price
+
+
+def validate_edge(edge: float, fair: float, ticker: str) -> tuple[bool, str]:
+    if edge > MAX_SANE_EDGE:
+        return False, f"Edge {edge:+.4f} exceeds max {MAX_SANE_EDGE:.2f} for {ticker}"
+    if edge < MIN_SANE_EDGE:
+        return False, f"Edge {edge:+.4f} below min {MIN_SANE_EDGE:.2f} for {ticker}"
+    if fair > 0.99 and edge > 0.10:
+        return False, f"Fair {fair:.4f} near 1.0 with edge {edge:+.4f}"
+    if fair < 0.01 and edge > 0.10:
+        return False, f"Fair {fair:.4f} near 0.0 with edge {edge:+.4f}"
+    return True, ""
 
 
 def price_quality(entry_price: float) -> float:
@@ -177,7 +191,11 @@ def build_research_envelope(
         near_term_ok = (minutes_to_close is not None) and (float(minutes_to_close) >= 20.0)
         if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0:
             midpoint = max(0.01, min(0.99, (yes_bid + yes_ask) / 2.0))
+            logger.debug("binary_quote_fallback raw ticker=%s bid=%.4f ask=%.4f midpoint=%.4f", market.get("ticker"), yes_bid, yes_ask, midpoint)
             fair_probability, edge = compute_side_edge(side, entry_price, midpoint)
+            edge_yes = midpoint - yes_ask
+            edge_no = midpoint - (1.0 - yes_bid)
+            logger.debug("binary_quote_fallback edges ticker=%s side=%s edge=%.4f edge_yes=%.4f edge_no=%.4f", market.get("ticker"), side, edge, edge_yes, edge_no)
             ladder_consistency = 0.5
             projection_supported = True
             projection_model = "binary_quote_fallback"
