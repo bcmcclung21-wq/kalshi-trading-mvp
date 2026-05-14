@@ -449,6 +449,8 @@ def build_candidate(
     )
     if not envelope.projection_supported:
         return None, "unsupported_projection_model"
+    if float(envelope.edge) <= 0.0:
+        return None, "low_edge"
     category = str(market.get("category") or "unknown").lower()
     if category == "sports":
         mid = (yes_ask_eff + yes_bid_eff) / 2.0 if yes_ask_eff > 0 and yes_bid_eff >= 0 else entry_price
