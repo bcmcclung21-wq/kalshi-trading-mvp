@@ -2,8 +2,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import statistics
+import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from collections import deque
 import httpx
 
 from app.models import Category, Market
@@ -23,6 +25,27 @@ class UniverseService:
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=10),
         )
         self._orderbooks = {}
+        self._cycle_id = 0
+        self._consecutive_orderbook_zero = 0
+        self._orderbook_zero_warn_threshold = int(os.getenv("ORDERBOOK_ZERO_WARN_THRESHOLD", "3"))
+        self._active_markets_gauge = 0
+        self._latency_samples_ms = deque(maxlen=500)
+
+    @property
+    def last_refresh(self):
+        return self._last_refresh
+
+    @property
+    def active_markets_gauge(self) -> int:
+        return self._active_markets_gauge
+
+    @property
+    def processing_latency_p99_ms(self) -> int:
+        if not self._latency_samples_ms:
+            return 0
+        if len(self._latency_samples_ms) == 1:
+            return int(self._latency_samples_ms[0])
+        return int(statistics.quantiles(self._latency_samples_ms, n=100, method="inclusive")[98])
 
     async def get_active_markets(self):
         stale = self._last_refresh is None or (datetime.now(timezone.utc) - self._last_refresh) > timedelta(minutes=5)
@@ -32,14 +55,54 @@ class UniverseService:
 
     async def refresh(self):
         async with self._refresh_lock:
+            cycle_id = self._cycle_id
+            self._cycle_id += 1
+            error_flags = []
+            refresh_started = time.perf_counter()
+
+            fetch_started = time.perf_counter()
             raw = await self._fetch_raw()
+            fetch_duration_ms = int((time.perf_counter() - fetch_started) * 1000)
+
             scored = [self._score(r) for r in raw]
             now = datetime.now(timezone.utc)
             active = [m for m in scored if m.ends_at > now and m.liquidity > 500 and m.spread < 0.10]
             self._markets = active
+            self._active_markets_gauge = len(active)
             self._last_refresh = now
             await self._fetch_orderbooks_for_active()
-            logger.warning("universe_refresh_complete raw=%d active=%d orderbooks=%d", len(raw), len(active), len(self._orderbooks))
+            orderbook_count = len(self._orderbooks)
+            if orderbook_count == 0:
+                self._consecutive_orderbook_zero += 1
+                error_flags.append("orderbooks_empty")
+            else:
+                self._consecutive_orderbook_zero = 0
+            refresh_duration_ms = int((time.perf_counter() - refresh_started) * 1000)
+            self._latency_samples_ms.append(refresh_duration_ms)
+
+            logger.warning(
+                "universe_refresh_complete",
+                extra={
+                    "cycle_id": cycle_id,
+                    "fetch_duration_ms": fetch_duration_ms,
+                    "refresh_duration_ms": refresh_duration_ms,
+                    "raw_count": len(raw),
+                    "active_count": len(active),
+                    "orderbook_count": orderbook_count,
+                    "error_flags": error_flags,
+                    "active_markets": self._active_markets_gauge,
+                    "processing_latency_p99": self.processing_latency_p99_ms,
+                },
+            )
+            if self._consecutive_orderbook_zero >= self._orderbook_zero_warn_threshold:
+                logger.warning(
+                    "orderbooks_zero_consecutive",
+                    extra={
+                        "cycle_id": cycle_id,
+                        "error_flags": ["orderbooks_empty_consecutive"],
+                        "orderbook_count": orderbook_count,
+                    },
+                )
             return active
 
     async def _fetch_raw(self):
