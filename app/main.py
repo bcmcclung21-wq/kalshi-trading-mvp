@@ -15,12 +15,14 @@ from app.cashout import CashoutManager
 from app.config import settings, WALLET_ADDRESS
 from app.db import init_db
 from app.engine import TradingEngine
+from app.observability import configure_logging
 from app.polymarket import PolymarketAPI
 from app.services.universe import UniverseService
 from app.routers import dashboard
 
 logger = logging.getLogger("app.main")
 _cycle_lock = asyncio.Lock()
+configure_logging()
 
 async def _run_cycle_loop(engine: TradingEngine, cashout: CashoutManager, interval_sec: int = 60):
     while True:
@@ -102,8 +104,17 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(dashboard.router, tags=["dashboard"])
 
 @app.get("/")
-async def root():
-    return FileResponse("static/index.html")
+async def root(request: Request):
+    accept = (request.headers.get("accept") or "").lower()
+    if "text/html" in accept:
+        return FileResponse("static/index.html")
+    universe = getattr(request.app.state, "universe", None)
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "active_count": len(universe._markets) if universe else 0,
+        "last_refresh_timestamp": universe.last_refresh.isoformat() if universe and universe.last_refresh else None,
+    }
 
 
 
@@ -124,7 +135,11 @@ async def health(request: Request):
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "markets_cached": len(universe._markets) if universe else 0,
-        "last_refresh": universe._last_refresh.isoformat() if universe and universe._last_refresh else None,
+        "active_count": len(universe._markets) if universe else 0,
+        "last_refresh": universe.last_refresh.isoformat() if universe and universe.last_refresh else None,
+        "last_refresh_timestamp": universe.last_refresh.isoformat() if universe and universe.last_refresh else None,
+        "active_markets": universe.active_markets_gauge if universe else 0,
+        "processing_latency_p99": universe.processing_latency_p99_ms if universe else 0,
         "auto_execute": settings.auto_execute,
         "dry_run": not settings.auto_execute,
         "cycle_running": _cycle_lock.locked(),
