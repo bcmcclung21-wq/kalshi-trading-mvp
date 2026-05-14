@@ -206,7 +206,7 @@ class TradingEngine:
     async def _execute_trades(self, selected, thresholds):
         executed = []
         auto_execute = settings.auto_execute
-        dry_run = not auto_execute
+        dry_run = settings.dry_run
 
         # STRICT bankroll percentage sizing — NO OVERRIDE ALLOWED
         for sel in selected:
