@@ -142,7 +142,7 @@ async def health(request: Request):
         "active_markets": universe.active_markets_gauge if universe else 0,
         "processing_latency_p99": universe.processing_latency_p99_ms if universe else 0,
         "auto_execute": settings.auto_execute,
-        "dry_run": not settings.auto_execute,
+        "dry_run": settings.dry_run,
         "cycle_running": _cycle_lock.locked(),
         "trades_today": engine.daily_stats["trades_today"] if engine else 0,
     }

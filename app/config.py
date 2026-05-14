@@ -40,8 +40,10 @@ class Settings(BaseSettings):
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
 
-    auto_execute: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() == "true"
-    dry_run: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() != "true"
+    auto_execute: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() in ("1", "true", "yes", "on")
+    dry_run: bool = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
+    if auto_execute:
+        dry_run = False
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
     same_day_only: bool = True

@@ -521,6 +521,7 @@ def build_candidate(
             "fair_probability": getattr(envelope, "fair_probability", 0.0),
             "edge": getattr(envelope, "edge", 0.0),
             "projection_model": getattr(envelope, "projection_model", "unknown"),
+            "token_id": market.get("token_id"),
         },
     ), None
 

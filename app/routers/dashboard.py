@@ -47,6 +47,7 @@ async def dashboard(request: Request):
         "trades": trades,
         "balance": None,
         "auto_execute": getattr(settings, "auto_execute", False) if settings else False,
+        "dry_run": getattr(settings, "dry_run", True) if settings else True,
         "allow_combos": getattr(settings, "allow_combos", False) if settings else False,
         "trades_today": engine.daily_stats["trades_today"] if engine else 0,
         "daily_pnl": engine.daily_stats["daily_pnl"] if engine else 0.0,
@@ -83,4 +84,4 @@ async def set_mode(request: Request):
     settings = request.app.state.settings
     settings.dry_run = mode == "dry"
     settings.auto_execute = mode == "live"
-    return {"status": "ok", "mode": "DRY" if settings.dry_run else "LIVE", "auto_execute": settings.auto_execute}
+    return {"status": "ok", "mode": "DRY" if settings.dry_run else "LIVE", "dry_run": settings.dry_run, "auto_execute": settings.auto_execute}

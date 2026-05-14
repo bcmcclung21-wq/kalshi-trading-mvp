@@ -575,7 +575,7 @@ tr:last-child td { border-bottom: none; }
     <div class="card">
       <div class="card-header"><div class="card-title">🧪 Mode</div></div>
       <div class="card-body">
-        <div class="kpi-value neu" style="font-size:20px;" id="health-mode">Dry</div>
+        <div class="kpi-value neu" style="font-size:20px;" id="health-mode">—</div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Execution</div>
       </div>
     </div>
@@ -710,8 +710,8 @@ function render(data) {
 
   /* Health */
   $('#health-markets').textContent = (data.markets_count||0)+' / '+(data.markets_count||0);
-  $('#health-mode').textContent = data.auto_execute ? 'LIVE' : 'DRY';
-  $('#health-mode').className = 'kpi-value '+(data.auto_execute?'neg':'pos');
+  $('#health-mode').textContent = data.dry_run ? 'Dry' : 'Live';
+  $('#health-mode').className = 'kpi-value '+(data.dry_run?'pos':'neg');
 }
 
 /* ─── Markets Table ─── */

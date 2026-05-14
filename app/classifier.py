@@ -129,7 +129,7 @@ def normalized_market(raw: Any) -> Optional[Dict[str, Any]]:
         "expiration_time": expiration_text,
         "minutes_to_close": minutes_to_close,
         "_close_time_source": close_source,
-        "_raw": raw,
+        "raw": raw,
     }
 
     base["category"] = _detect_category_for_payload(raw, base)
