@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.cashout = cashout
     app.state.settings = settings
+    logger.info("Mode: %s", "DRY" if settings.dry_run else "LIVE")
 
     logger.info("startup_wallet_connected wallet=%s", WALLET_ADDRESS or "not_configured")
     if not WALLET_ADDRESS:

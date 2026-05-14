@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
 
-    auto_execute: bool = False       # SAFETY: default False
-    dry_run: bool = True  # SAFETY: default True until explicitly disabled
+    auto_execute: bool = os.getenv("DRY_MODE", "false").strip().lower() != "true"
+    dry_run: bool = os.getenv("DRY_MODE", "false").strip().lower() == "true"
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
     same_day_only: bool = True

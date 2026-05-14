@@ -1,13 +1,14 @@
 from __future__ import annotations
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger("app.dashboard")
 
 router = APIRouter()
 
 @router.get("/dashboard")
+@router.get("/api/dashboard")
 async def dashboard(request: Request):
     universe = getattr(request.app.state, "universe", None)
     engine = getattr(request.app.state, "engine", None)
@@ -52,3 +53,34 @@ async def dashboard(request: Request):
         "brier_score": engine.daily_stats["brier_score"] if engine else 0.0,
         "win_rate": engine.daily_stats["win_rate"] if engine else 0.0,
     }
+
+
+@router.get("/api/markets")
+async def markets(request: Request):
+    payload = await dashboard(request)
+    markets_data = payload.get("markets", [])
+    for market in markets_data:
+        market["status"] = "watching" if market.get("active") else "closed"
+    return {
+        "status": payload.get("status", "ok"),
+        "timestamp": payload.get("timestamp"),
+        "markets": markets_data,
+        "markets_count": len(markets_data),
+    }
+
+
+@router.post("/api/mode")
+async def set_mode(request: Request):
+    body = await request.json()
+    mode = str(body.get("mode", "")).strip().lower()
+    token = request.headers.get("x-mode-token", "")
+    expected = getattr(request.app.state.settings, "polymarket_secret_key", "")
+    if expected and token != expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if mode not in {"dry", "live"}:
+        raise HTTPException(status_code=400, detail="mode must be dry or live")
+
+    settings = request.app.state.settings
+    settings.dry_run = mode == "dry"
+    settings.auto_execute = mode == "live"
+    return {"status": "ok", "mode": "DRY" if settings.dry_run else "LIVE", "auto_execute": settings.auto_execute}

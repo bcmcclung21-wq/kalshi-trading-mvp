@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 import re
+import logging
 
 from app.classifier import detect_category
 from app.learning import bucket_features, get_learning_engine
 from app.projection_registry import project as project_market
 
+logger = logging.getLogger("app.research")
 
 @dataclass(slots=True)
 class ResearchEnvelope:
@@ -192,8 +194,26 @@ def build_research_envelope(
             tags.append("temperature_registry")
 
     if not projection_supported:
+        yes_bid = float(market.get("yes_bid") or 0.0)
+        yes_ask = float(market.get("yes_ask") or 0.0)
+        no_bid = float(market.get("no_bid") or 0.0)
+        no_ask = float(market.get("no_ask") or 0.0)
+        market_midpoint = 0.0
+        if yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid:
+            market_midpoint = (yes_bid + yes_ask) / 2.0
+        elif no_bid > 0 and no_ask > 0 and no_ask >= no_bid:
+            market_midpoint = 1.0 - ((no_bid + no_ask) / 2.0)
+        if market_midpoint > 0:
+            fair_probability = max(0.01, min(0.99, market_midpoint))
+            edge = abs(fair_probability - entry_price)
+            ladder_consistency = max(0.1, min(1.0, liq_q / 100.0))
+            projection_supported = True
+            projection_model = "fallback_midpoint"
+            logger.debug("market_mid=%s, fair=%s, edge=%s", round(market_midpoint, 4), round(fair_probability, 4), round(edge, 4))
+
+    if not projection_supported:
         return ResearchEnvelope(
-            projection_score=38.0,
+            projection_score=0.0,
             research_score=liq_q,
             confidence_score=round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2),
             confirmation_score=round(min(100.0, (time_q * 0.5) + (clarity_q * 0.5)), 2),
@@ -213,8 +233,13 @@ def build_research_envelope(
         )
 
     edge_bps = edge * 10000.0
-    projection_score = max(0.0, min(100.0, 50.0 + (edge_bps / 60.0) + (ladder_consistency * 20.0)))
-    confidence_score = max(0.0, min(100.0, (time_q * 0.25) + (clarity_q * 0.25) + (liq_q * 0.30) + (ladder_consistency * 20.0)))
+    liquidity_score = max(0.1, min(1.0, liq_q / 100.0))
+    intended_position_size = max(1.0, min(100.0, liq_q))
+    projection_score = max(0.0, min(100.0, edge * intended_position_size * liquidity_score * 100.0))
+    spread_quality = max(0.0, min(1.0, 1.0 - (spread_cents / 20.0)))
+    staleness_quality = max(0.0, min(1.0, (time_q / 100.0)))
+    depth_quality = liquidity_score
+    confidence_score = max(0.0, min(100.0, ((spread_quality * 0.35) + (depth_quality * 0.40) + (staleness_quality * 0.25)) * 100.0))
     ev_bonus = max(0.0, min(15.0, edge_bps / 100.0))
 
     return ResearchEnvelope(
