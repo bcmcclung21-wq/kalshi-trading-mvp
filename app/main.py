@@ -3,8 +3,9 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -99,6 +100,17 @@ app.include_router(dashboard.router, tags=["dashboard"])
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
+
+
+
+@app.get("/favicon.ico")
+@app.get("/apple-touch-icon.png")
+@app.get("/apple-touch-icon-precomposed.png")
+async def root_favicon():
+    favicon_path = "static/favicon.ico"
+    if Path(favicon_path).exists():
+        return FileResponse(favicon_path)
+    raise HTTPException(status_code=404, detail="Not found")
 
 @app.get("/healthz")
 async def health(request: Request):
