@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
 import logging
+import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
@@ -9,6 +11,32 @@ from app.strategy import TUNER, get_adjusted_thresholds
 from app.learning import get_learning_engine
 
 logger = logging.getLogger("app.engine")
+
+
+@dataclass(slots=True)
+class MarketCacheEntry:
+    last_price: float
+    last_evaluated: float
+    edge: float
+
+
+class MarketDeduplicator:
+    def __init__(self, price_threshold: float = 0.01, min_recheck_seconds: float = 300):
+        self.cache: dict[str, MarketCacheEntry] = {}
+        self.price_threshold = price_threshold
+        self.min_recheck_seconds = min_recheck_seconds
+
+    def should_evaluate(self, ticker: str, current_price: float) -> bool:
+        now = time.time()
+        entry = self.cache.get(ticker)
+        if entry is None:
+            return True
+        price_moved = abs(current_price - entry.last_price) > self.price_threshold
+        time_expired = (now - entry.last_evaluated) > self.min_recheck_seconds
+        return price_moved or time_expired
+
+    def update(self, ticker: str, current_price: float, edge: float):
+        self.cache[ticker] = MarketCacheEntry(last_price=current_price, last_evaluated=time.time(), edge=edge)
 
 class TradingEngine:
     def __init__(self, api, universe, calibration):
@@ -22,6 +50,7 @@ class TradingEngine:
             "brier_score": 1.0, "win_rate": 0.0,
         }
         self._learning_lock = asyncio.Lock()
+        self._deduplicator = MarketDeduplicator()
 
     async def run_cycle(self):
         try:
@@ -90,6 +119,7 @@ class TradingEngine:
                 return {"status": "no_pool", "trades": 0, "markets_scanned": len(markets), "rejects": rejects}
 
             candidates = []
+            dedup_skipped = 0
             for m in pool:
                 ob = self.universe.get_orderbook(m.get("slug", "")) or self.universe.get_orderbook(m.get("ticker", ""))
                 if not ob:
@@ -99,10 +129,23 @@ class TradingEngine:
                         "no_bids": [{"price": 1 - m.get("best_ask", 1), "qty": 1}],
                         "no_asks": [{"price": 1 - m.get("best_bid", 0), "qty": 1}],
                     }
+                yes_bid = float(m.get("yes_bid") or m.get("best_bid") or 0.0)
+                yes_ask = float(m.get("yes_ask") or m.get("best_ask") or 0.0)
+                if yes_bid > 0.0 and yes_ask > 0.0:
+                    current_mid = (yes_bid + yes_ask) / 2.0
+                else:
+                    current_mid = float(m.get("last_price") or 0.0)
+                ticker = str(m.get("ticker") or "")
+                if not self._deduplicator.should_evaluate(ticker, current_mid):
+                    dedup_skipped += 1
+                    logger.debug("Skipping %s — no price change since last eval", ticker)
+                    continue
                 cand, reason = build_candidate(m, ob, all_markets=market_dicts)
                 if cand:
                     candidates.append(cand)
+                    self._deduplicator.update(ticker, current_mid, float(cand.details.get("edge", 0.0)))
                 else:
+                    self._deduplicator.update(ticker, current_mid, 0.0)
                     logger.debug("candidate_rejected ticker=%s reason=%s", m.get("ticker"), reason)
 
             if not candidates:
@@ -123,7 +166,38 @@ class TradingEngine:
 
             self.daily_stats["last_trades"] = executed[-10:]
             self.daily_stats["win_rate"] = round(TUNER.learning.winning_trades / max(1, TUNER.learning.total_trades), 4)
-            return {"status": "ok", "trades": len(executed), "candidates": len(candidates), "selected": len(selected)}
+            model_stats: dict[str, dict[str, float]] = {}
+            family_stats: dict[str, int] = {}
+            positive_edges = negative_edges = zero_edges = 0
+            for c in candidates:
+                family_stats[c.category] = family_stats.get(c.category, 0) + 1
+                model = str(c.details.get("projection_model", "unknown"))
+                edge = float(c.details.get("edge", 0.0))
+                ms = model_stats.setdefault(model, {"evaluated": 0, "positive_edges": 0, "edge_sum": 0.0})
+                ms["evaluated"] += 1
+                ms["edge_sum"] += edge
+                if edge > 0:
+                    ms["positive_edges"] += 1
+                    positive_edges += 1
+                elif edge < 0:
+                    negative_edges += 1
+                else:
+                    zero_edges += 1
+            for ms in model_stats.values():
+                evaluated = max(1, int(ms["evaluated"]))
+                ms["avg_edge"] = round(float(ms["edge_sum"]) / evaluated, 4)
+                ms.pop("edge_sum", None)
+
+            return {
+                "status": "ok",
+                "trades": len(executed),
+                "candidates": len(candidates),
+                "selected": len(selected),
+                "models_used": model_stats,
+                "dedup_skipped": dedup_skipped,
+                "edge_distribution": {"positive": positive_edges, "negative": negative_edges, "zero": zero_edges},
+                "families": family_stats,
+            }
         except Exception as e:
             logger.exception("run_cycle_fatal: %s", e)
             return {"status": "error", "error": str(e)}
@@ -257,4 +331,3 @@ class TradingEngine:
                 info["status"] = "dry_run"
             executed.append(info)
         return executed
-

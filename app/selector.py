@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 from app.classifier import normalized_market, is_packaged_market
-from app.research import build_research_envelope, group_ladder_markets
+from app.research import build_research_envelope, group_ladder_markets, validate_edge
 from app.strategy import SPORTS, TUNING
 
 logger = logging.getLogger(__name__)
@@ -356,9 +356,28 @@ def _best_quote_side(orderbook: dict[str, Any]) -> tuple[str, float, float] | No
 
 def _family_key(market: dict[str, Any]) -> str:
     ticker = str(market.get("ticker") or "").lower()
+    category = str(market.get("category") or "").strip().lower()
+    if category:
+        return category
     event = str(market.get("event_ticker") or "").lower()
     mt = _LADDER_ROOT_RE.match(ticker)
-    return mt.group(1) if mt else event
+    if mt:
+        return mt.group(1)
+    if event:
+        return event
+    family_keywords: dict[str, list[str]] = {
+        "sports": ["nba", "nhl", "fifa", "world-cup", "premier-league", "bundesliga", "la-liga", "serie-a"],
+        "politics_us": ["democratic", "republican", "senate", "governor", "presidential", "election", "trump", "biden"],
+        "politics_intl": ["ukraine", "putin", "zelenskyy", "nato", "china", "taiwan"],
+        "crypto": ["bitcoin", "opensea", "hyperliquid"],
+        "tech": ["openai", "anthropic", "microsoft", "amazon", "meta", "tiktok"],
+        "entertainment": ["james-bond", "taylor-swift", "gta-vi", "album"],
+        "economics": ["fed-rate", "recession", "ipo"],
+    }
+    for family, keywords in family_keywords.items():
+        if any(kw in ticker for kw in keywords):
+            return family
+    return "misc"
 
 def build_candidate(
     market: dict[str, Any],
@@ -450,6 +469,10 @@ def build_candidate(
         envelope.confidence_score,
         round(total_score, 2),
     )
+    edge_valid, edge_reason = validate_edge(float(envelope.edge), float(envelope.fair_probability), str(market.get("ticker") or ""))
+    if not edge_valid:
+        logger.warning("candidate_model REJECTED: %s", edge_reason)
+        return None, "invalid_edge"
     if not envelope.projection_supported:
         return None, "unsupported_projection_model"
     if float(envelope.edge) <= 0.0:
