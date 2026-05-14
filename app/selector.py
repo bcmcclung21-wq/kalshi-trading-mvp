@@ -66,6 +66,12 @@ def _infer_category_from_tags(market: dict[str, Any]) -> str | None:
 def _best_effort_minutes(market: dict[str, Any], close_dt: datetime | None, now: datetime) -> float | None:
     if close_dt is not None:
         return (close_dt - now).total_seconds() / 60.0
+    # Fallback: use ends_at if it's a datetime
+    ends_at = market.get("ends_at")
+    if isinstance(ends_at, datetime):
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=timezone.utc)
+        return (ends_at.astimezone(timezone.utc) - now).total_seconds() / 60.0
     raw = market.get("minutes_to_close")
     try:
         return float(raw) if raw is not None else None
@@ -120,9 +126,14 @@ def normalize_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 def _parse_close_dt(market: dict[str, Any]) -> datetime | None:
-    close_value = market.get("close_time") or market.get("expiration_time")
-    if not close_value:
-        close_value = market.get("endDate")
+    # Handle already-parsed datetime object passed from engine
+    ends_at = market.get("ends_at")
+    if isinstance(ends_at, datetime):
+        if ends_at.tzinfo is None:
+            ends_at = ends_at.replace(tzinfo=timezone.utc)
+        return ends_at.astimezone(timezone.utc)
+    # Handle string fields from raw API
+    close_value = market.get("close_time") or market.get("expiration_time") or market.get("endDate")
     if not close_value:
         close_value = market.get("resolution_time")
     if not close_value:
@@ -176,15 +187,15 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if rejects["wrong_market_type"] < 3 and market.get("market_type") not in (None, "", "single"):
             logger.warning("wrong_market_type_sample ticker=%s mt=%s", market.get("ticker", "?"), market.get("market_type"))
         if cat == "sports":
-            max_hours = 24
-        elif cat == "politics":
-            max_hours = 168
-        elif cat == "economics":
-            max_hours = 48
-        elif cat == "crypto":
             max_hours = 72
+        elif cat == "politics":
+            max_hours = 336
+        elif cat == "economics":
+            max_hours = 168
+        elif cat == "crypto":
+            max_hours = 168
         elif cat == "climate":
-            max_hours = 48
+            max_hours = 168
         else:
             max_hours = TUNING.max_settlement_window_hours
         max_minutes = max_hours * 60
@@ -211,8 +222,15 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         close_dt = _parse_close_dt(market)
         minutes = _best_effort_minutes(market, close_dt, now)
         if minutes is None:
-            rejects["missing_close_time"] += 1
-            continue
+            # Final fallback: try ends_at directly
+            ends_at = market.get("ends_at")
+            if isinstance(ends_at, datetime):
+                if ends_at.tzinfo is None:
+                    ends_at = ends_at.replace(tzinfo=timezone.utc)
+                minutes = (ends_at.astimezone(timezone.utc) - now).total_seconds() / 60.0
+            if minutes is None:
+                rejects["missing_close_time"] += 1
+                continue
         if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
             continue
@@ -227,7 +245,9 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
                     market_date = parsed.astimezone(timezone.utc).date()
             if market_date is None and close_dt is not None:
                 market_date = close_dt.astimezone(timezone.utc).date()
-            if market_date not in (today_utc, (datetime.now(timezone.utc) + timedelta(hours=12)).date()):
+            # Allow sports markets closing within next 72 hours
+            cutoff_date = (datetime.now(timezone.utc) + timedelta(hours=72)).date()
+            if market_date is None or not (today_utc <= market_date <= cutoff_date):
                 rejects["sports_not_today"] += 1
                 continue
         elif minutes > max_minutes:
@@ -244,7 +264,9 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             else:
                 rejects["missing_close_time"] += 1
                 continue
-            if not (today_market_tz <= compare_date <= (datetime.now(MARKET_TZ) + timedelta(hours=24)).date()):
+            # Allow markets closing within next 7 days instead of strict same-day
+            cutoff_date = (datetime.now(MARKET_TZ) + timedelta(days=7)).date()
+            if not (today_market_tz <= compare_date <= cutoff_date):
                 rejects["not_same_day_settlement"] += 1
                 continue
 
