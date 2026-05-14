@@ -72,7 +72,7 @@ class TradingEngine:
                     "volume": getattr(m, "volume_24h", 0),
                     "minutes_to_close": getattr(m, "minutes_to_close", None),
                     "slug": getattr(m, "slug", ""),
-                    "_raw": getattr(m, "_raw", {}),
+                    "raw": getattr(m, "raw", {}),
                 }
                 ob = self.universe.get_orderbook(m.slug) or self.universe.get_orderbook(m.id)
                 if ob:

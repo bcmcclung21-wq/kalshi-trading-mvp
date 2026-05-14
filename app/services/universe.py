@@ -171,7 +171,7 @@ class UniverseService:
                 logger.debug("orderbook_fetch_exception %s: %s", getattr(m, "slug", m.id), e)
 
     def _get_yes_token_id(self, market: Market) -> str | None:
-        raw = getattr(market, "_raw", None)
+        raw = getattr(market, "raw", None)
         if raw and isinstance(raw, dict):
             tokens = raw.get("clobTokenIds")
             if tokens:
@@ -198,7 +198,7 @@ class UniverseService:
         no_bids = []
         no_asks = []
 
-        raw = getattr(market, "_raw", {}) or {}
+        raw = getattr(market, "raw", {}) or {}
         tokens = raw.get("clobTokenIds", [])
         if isinstance(tokens, str):
             try:
@@ -298,7 +298,7 @@ class UniverseService:
             question=raw.get("question") or raw.get("title") or "",
             slug=slug,
             minutes_to_close=minutes_to_close,
-            _raw=raw,
+            raw=raw,
         )
 
     @staticmethod
