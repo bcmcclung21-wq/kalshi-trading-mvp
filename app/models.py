@@ -36,6 +36,7 @@ class Market(BaseModel):
     last_price: float = 0.5
     ends_at: datetime
     url: str = ""
+    slug: str = ""
     best_bid: float = 0.0
     best_ask: float = 1.0
     market_type: str = "single"
