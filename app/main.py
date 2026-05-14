@@ -65,6 +65,10 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
 
     logger.info("startup_wallet_connected wallet=%s", WALLET_ADDRESS or "not_configured")
+    if not WALLET_ADDRESS:
+        logger.error("CRITICAL: WALLET_ADDRESS not configured. Positions, balances, and trades will fail.")
+    if not api.api_key or not api.api_secret:
+        logger.error("CRITICAL: POLYMARKET_KEY_ID or POLYMARKET_SECRET_KEY not configured. Authenticated API calls will fail.")
     try:
         positions = await api.get_positions(limit=1)
         logger.info("startup_positions_fetch_ok items=%d", len(positions))

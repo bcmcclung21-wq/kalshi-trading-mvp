@@ -38,6 +38,8 @@ class CashoutManager:
     async def evaluate_all(self):
         if not self.settings.enabled:
             return []
+        if not settings.auto_execute or settings.dry_run:
+            return []
         try:
             positions = await self.api.get_positions(limit=100)
         except Exception as e:
