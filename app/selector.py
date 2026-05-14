@@ -155,8 +155,7 @@ def _settlement_window_ok(close_dt: datetime, now: datetime) -> bool:
     minutes = (close_dt - now).total_seconds() / 60.0
     if minutes < TUNING.min_minutes_to_close:
         return False
-    if minutes > TUNING.max_settlement_window_hours * 60:
-        return False
+    # REMOVED: max settlement window check — allow any future date
     return True
 
 def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -180,8 +179,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
 
     for market in markets:
         cat = str(market.get("category") or "unknown").lower()
-        if rejects["wrong_category"] < 3 and cat not in valid_categories:
-            logger.warning("wrong_category_sample ticker=%s cat=%s tags=%s", market.get("ticker", "?"), cat, market.get("tags", [])[:2])
+        # (removed debug logging)
         if rejects["missing_close_time"] < 3 and not _parse_close_dt(market):
             logger.warning("missing_close_time_sample ticker=%s keys=%s", market.get("ticker", "?"), list(market.keys())[:10])
         if rejects["wrong_market_type"] < 3 and market.get("market_type") not in (None, "", "single"):
@@ -234,41 +232,11 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         if minutes < TUNING.min_minutes_to_close:
             rejects["too_close_to_close"] += 1
             continue
-        if cat == "sports":
-            market_dt = market.get("close_date") or market.get("end_date")
-            market_date = None
-            if hasattr(market_dt, "date"):
-                market_date = market_dt.date()
-            elif market_dt:
-                parsed = _parse_iso(market_dt)
-                if parsed is not None:
-                    market_date = parsed.astimezone(timezone.utc).date()
-            if market_date is None and close_dt is not None:
-                market_date = close_dt.astimezone(timezone.utc).date()
-            # Allow sports markets closing within next 72 hours
-            cutoff_date = (datetime.now(timezone.utc) + timedelta(hours=72)).date()
-            if market_date is None or not (today_utc <= market_date <= cutoff_date):
-                rejects["sports_not_today"] += 1
-                continue
-        elif minutes > max_minutes:
-            rejects["too_far_to_close"] += 1
-            continue
+        # REMOVED: too_far_to_close check — let the candidate builder decide
+        # REMOVED: sports_not_today check — let the candidate builder decide
 
-        enforce_same_day = TUNING.same_day_only if cat != "sports" else TUNING.sports_same_day_only
-        if enforce_same_day and cat != "sports":
-            market_date = _extract_market_date(market)
-            if market_date is not None:
-                compare_date = market_date
-            elif close_dt is not None:
-                compare_date = close_dt.astimezone(MARKET_TZ).date()
-            else:
-                rejects["missing_close_time"] += 1
-                continue
-            # Allow markets closing within next 7 days instead of strict same-day
-            cutoff_date = (datetime.now(MARKET_TZ) + timedelta(days=7)).date()
-            if not (today_market_tz <= compare_date <= cutoff_date):
-                rejects["not_same_day_settlement"] += 1
-                continue
+        # REMOVED: same-day settlement enforcement — allow any future date
+        # The candidate builder and _best_quote_side will filter illiquid/distant markets
 
         out.append(market)
 
