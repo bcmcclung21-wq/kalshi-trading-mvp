@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.calibration import CalibrationService
 from app.cashout import CashoutManager
-from app.config import settings
+from app.config import settings, WALLET_ADDRESS
 from app.db import init_db
 from app.engine import TradingEngine
 from app.polymarket import PolymarketAPI
@@ -62,6 +62,13 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.cashout = cashout
     app.state.settings = settings
+
+    logger.info("startup_wallet_connected wallet=%s", WALLET_ADDRESS or "not_configured")
+    try:
+        positions = await api.get_positions(limit=1)
+        logger.info("startup_positions_fetch_ok items=%d", len(positions))
+    except Exception as e:
+        logger.warning("startup_positions_fetch_failed: %s", e)
 
     try:
         await universe.refresh()

@@ -4,6 +4,8 @@ import asyncio
 import logging, os
 import httpx
 
+from app.config import WALLET_ADDRESS
+
 logger = logging.getLogger("app.polymarket")
 
 class PolymarketAPI:
@@ -15,7 +17,7 @@ class PolymarketAPI:
         self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
         self.data_base = os.getenv("POLYMARKET_DATA_BASE", "https://data-api.polymarket.com")
         self.api_base = os.getenv("POLYMARKET_API_BASE", "https://api.polymarket.us")
-        self.wallet_address = os.getenv("POLYMARKET_WALLET_ADDRESS", "").strip()
+        self.wallet_address = WALLET_ADDRESS
         self.headers = {}
         if self.api_key:
             self.headers["POLYMARKET_API_KEY"] = self.api_key
