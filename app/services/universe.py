@@ -76,7 +76,7 @@ class UniverseService:
         top_markets = sorted(self._markets, key=lambda m: m.liquidity, reverse=True)[:50]
         for m in top_markets:
             try:
-                slug = m.id if m.id else ""
+                slug = getattr(m, 'slug', '') or (getattr(m, 'url', '').split('/')[-1] if hasattr(m, 'url') else m.id)
                 if not slug:
                     continue
                 resp = await self._client.get(f"{self.gamma_base}/orderbook/{slug}", timeout=10)
@@ -140,6 +140,7 @@ class UniverseService:
             close_time=str(close_time) if close_time is not None else None,
             tags=raw.get("tags", []),
             question=raw.get("question") or raw.get("title") or "",
+            slug=slug,
         )
 
     @staticmethod
