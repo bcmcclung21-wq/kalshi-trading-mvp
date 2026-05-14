@@ -121,6 +121,7 @@ class UniverseService:
         slug = raw.get("slug", "")
         mid = raw.get("id", "")
         url = f"https://polymarket.com/event/{slug}" if slug else f"https://polymarket.com/market/{mid}"
+        close_time = raw.get("close_time") or raw.get("expiration_time") or raw.get("endDate")
         return Market(
             id=mid or slug or "unknown",
             title=raw.get("question") or raw.get("title") or "Untitled",
@@ -135,6 +136,10 @@ class UniverseService:
             url=url,
             best_bid=best_bid,
             best_ask=best_ask,
+            market_type=raw.get("market_type") or "single",
+            close_time=str(close_time) if close_time is not None else None,
+            tags=raw.get("tags", []),
+            question=raw.get("question") or raw.get("title") or "",
         )
 
     @staticmethod
