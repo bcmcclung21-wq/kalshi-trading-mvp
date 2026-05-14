@@ -16,8 +16,8 @@ def get_wallet_address() -> str:
 
 
 def resolve_wallet_address() -> str:
-    """Return explicit POLYMARKET_WALLET_ADDRESS override, else derive from PRIVATE_KEY."""
-    override = os.getenv("POLYMARKET_WALLET_ADDRESS", "").strip()
+    """Resolve wallet via explicit env vars, else derive from PRIVATE_KEY."""
+    override = os.getenv("POLYMARKET_WALLET_ADDRESS", "").strip() or os.getenv("WALLET_ADDRESS", "").strip()
     if override:
         return override
     try:
