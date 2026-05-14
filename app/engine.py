@@ -50,12 +50,18 @@ class TradingEngine:
             market_dicts = []
             for m in markets:
                 d = {
-                    "ticker": m.id, "title": m.title,
+                    "ticker": m.slug or m.id,
+                    "market_id": m.id,
+                    "title": m.title,
                     "category": str(m.category.value if hasattr(m.category, "value") else m.category),
-                    "confidence": m.confidence, "liquidity": m.liquidity,
-                    "spread": m.spread, "volume_24h": m.volume_24h,
-                    "last_price": m.last_price, "ends_at": m.ends_at,
-                    "best_bid": m.best_bid, "best_ask": m.best_ask,
+                    "confidence": m.confidence,
+                    "liquidity": m.liquidity,
+                    "spread": m.spread,
+                    "volume_24h": m.volume_24h,
+                    "last_price": m.last_price,
+                    "ends_at": m.ends_at,
+                    "best_bid": m.best_bid,
+                    "best_ask": m.best_ask,
                     "market_type": getattr(m, "market_type", "single"),
                     "legs": 1,
                     "close_time": getattr(m, "close_time", None),
@@ -64,13 +70,17 @@ class TradingEngine:
                     "tags": getattr(m, "tags", []),
                     "question": getattr(m, "question", m.title),
                     "volume": getattr(m, "volume_24h", 0),
+                    "minutes_to_close": getattr(m, "minutes_to_close", None),
+                    "slug": getattr(m, "slug", ""),
+                    "_raw": getattr(m, "_raw", {}),
                 }
-                ob = self.universe.get_orderbook(m.id)
+                ob = self.universe.get_orderbook(m.slug) or self.universe.get_orderbook(m.id)
                 if ob:
                     d["yes_bid"] = ob.get("yes_bid")
                     d["yes_ask"] = ob.get("yes_ask")
                     d["no_bid"] = ob.get("no_bid")
                     d["no_ask"] = ob.get("no_ask")
+                    d["token_id"] = ob.get("token_id")
                 market_dicts.append(d)
 
             pool, rejects = single_pool(market_dicts)
@@ -81,7 +91,7 @@ class TradingEngine:
 
             candidates = []
             for m in pool:
-                ob = self.universe.get_orderbook(m.get("ticker", ""))
+                ob = self.universe.get_orderbook(m.get("slug", "")) or self.universe.get_orderbook(m.get("ticker", ""))
                 if not ob:
                     ob = {
                         "yes_bids": [{"price": m.get("best_bid", 0), "qty": 1}],
@@ -112,9 +122,7 @@ class TradingEngine:
                 self.calibration.record_trade(t["market_id"], t["predicted_prob"], t["side"])
 
             self.daily_stats["last_trades"] = executed[-10:]
-            self.daily_stats["win_rate"] = round(
-                TUNER.learning.winning_trades / max(1, TUNER.learning.total_trades), 4
-            )
+            self.daily_stats["win_rate"] = round(TUNER.learning.winning_trades / max(1, TUNER.learning.total_trades), 4)
             return {"status": "ok", "trades": len(executed), "candidates": len(candidates), "selected": len(selected)}
         except Exception as e:
             logger.exception("run_cycle_fatal: %s", e)
@@ -198,33 +206,52 @@ class TradingEngine:
     async def _execute_trades(self, selected, thresholds):
         executed = []
         auto_execute = settings.auto_execute
-        dry_run = not auto_execute or getattr(settings, "dry_run", False)
+        dry_run = not auto_execute
+
+        balance = 0.0
+        if auto_execute:
+            try:
+                balances = await self.api.get_balances()
+                if isinstance(balances, dict):
+                    balance = float(balances.get("usable", 0) or balances.get("balance", 0) or 0)
+            except Exception as e:
+                logger.warning("balance_check_failed: %s", e)
+
         for sel in selected:
             price = sel.entry_price
             legs = sel.legs
-            if legs == 1: risk_pct = 0.02
-            elif legs == 2: risk_pct = 0.01
-            elif legs == 3: risk_pct = 0.0075
-            else: risk_pct = 0.005
+            if legs == 1:
+                risk_pct = 0.02
+            elif legs == 2:
+                risk_pct = 0.01
+            elif legs == 3:
+                risk_pct = 0.0075
+            else:
+                risk_pct = 0.005
             bankroll = settings.bankroll_usd
             max_risk = min(thresholds.get("max_risk_per_trade_usd", 50.0), bankroll * risk_pct)
             size = max_risk / max(price, 0.01)
             size = min(size, 100.0)
-            info = {
-                "market_id": sel.ticker, "market_title": sel.ticker,
-                "side": sel.side, "price": round(price, 4), "size": round(size, 4),
-                "total_score": sel.total_score, "edge_bps": int(sel.spread_cents * 100),
-                "predicted_prob": sel.details.get("fair_probability", price) if sel.details else price,
-                "confidence": sel.confidence_score / 100.0, "category": sel.category,
-            }
-            if not dry_run and auto_execute:
+            token_id = sel.details.get("token_id") if sel.details else None
+            info = {"market_id": sel.ticker, "market_title": sel.ticker, "side": sel.side, "price": round(price, 4), "size": round(size, 4), "total_score": sel.total_score, "edge_bps": int(sel.spread_cents * 100), "predicted_prob": sel.details.get("fair_probability", price) if sel.details else price, "confidence": sel.confidence_score / 100.0, "category": sel.category, "token_id": token_id}
+
+            if auto_execute and balance < max_risk:
+                info.update({"status": "skipped", "error": "insufficient_balance"})
+                executed.append(info)
+                continue
+
+            if not dry_run and auto_execute and token_id:
                 try:
-                    result = await self.api.place_order(sel.ticker, sel.side, size, price)
+                    result = await self.api.place_order(token_id, sel.side, size, price)
                     info.update({"status": "executed", "order_id": result.get("id", "")})
                     self.daily_stats["trades_today"] += 1
+                    balance -= max_risk
                 except Exception as e:
                     info.update({"status": "failed", "error": str(e)})
+            elif not dry_run and auto_execute and not token_id:
+                info.update({"status": "failed", "error": "missing_token_id"})
             else:
                 info["status"] = "dry_run"
             executed.append(info)
         return executed
+

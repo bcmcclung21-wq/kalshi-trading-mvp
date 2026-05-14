@@ -1,37 +1,30 @@
-"""Polymarket API wrapper using direct HTTP calls (no deprecated SDK)."""
 from __future__ import annotations
 import asyncio
 import logging, os
 import httpx
-
 from app.config import WALLET_ADDRESS
-
 logger = logging.getLogger("app.polymarket")
-
 class PolymarketAPI:
     def __init__(self):
-        # FIX: env var names now match README and Railway config
         self.api_key = os.getenv("POLYMARKET_KEY_ID", "")
         self.api_secret = os.getenv("POLYMARKET_SECRET_KEY", "")
         self.passphrase = os.getenv("POLYMARKET_PASSPHRASE", "")
         self.gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
         self.data_base = os.getenv("POLYMARKET_DATA_BASE", "https://data-api.polymarket.com")
         self.api_base = os.getenv("POLYMARKET_API_BASE", "https://api.polymarket.us")
+        self.clob_base = os.getenv("POLYMARKET_CLOB_BASE", "https://clob.polymarket.com")
         self.wallet_address = WALLET_ADDRESS
         self.headers = {}
         if self.api_key:
-            self.headers["POLYMARKET_API_KEY"] = self.api_key
+            self.headers["POLYMARKET-API-KEY"] = self.api_key
         if self.api_secret:
-            self.headers["POLYMARKET_API_SECRET"] = self.api_secret
+            self.headers["POLYMARKET-API-SECRET"] = self.api_secret
         if self.passphrase:
-            self.headers["POLYMARKET_PASSPHRASE"] = self.passphrase
+            self.headers["POLYMARKET-PASSPHRASE"] = self.passphrase
 
     async def get_markets(self, limit=100, offset=0, closed=False, tag=None):
         async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(
-                f"{self.gamma_base}/markets",
-                params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})}
-            )
+            r = await c.get(f"{self.gamma_base}/markets", params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})})
             r.raise_for_status()
             return r.json()
 
@@ -41,9 +34,9 @@ class PolymarketAPI:
             r.raise_for_status()
             return r.json()
 
-    async def get_orderbook(self, ticker):
+    async def get_orderbook(self, token_id: str):
         async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(f"{self.gamma_base}/orderbook/{ticker}")
+            r = await c.get(f"{self.clob_base}/book", params={"token_id": token_id})
             r.raise_for_status()
             return r.json()
 
@@ -63,12 +56,7 @@ class PolymarketAPI:
                     return r.json()
             except httpx.HTTPStatusError as e:
                 request_url = str(e.request.url) if e.request else url
-                logger.warning(
-                    "polymarket_request_failed status=%s url=%s response=%s",
-                    e.response.status_code if e.response else "unknown",
-                    request_url,
-                    (e.response.text[:500] if e.response else ""),
-                )
+                logger.warning("polymarket_request_failed status=%s url=%s response=%s", e.response.status_code if e.response else "unknown", request_url, (e.response.text[:500] if e.response else ""))
                 if e.response.status_code == 404:
                     raise
                 last_error = e
@@ -81,14 +69,9 @@ class PolymarketAPI:
 
     async def get_positions(self, limit=100):
         data_url = f"{self.data_base}/positions"
-
         if not self.wallet_address:
-            logger.warning(
-                "positions_fetch_skipped reason=missing_wallet data_api_requires_user_param limit=%s",
-                limit,
-            )
+            logger.warning("positions_fetch_skipped reason=missing_wallet limit=%s", limit)
             return []
-
         data_params = {"user": self.wallet_address, "limit": limit}
         logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
         d = await self.fetch_with_retry(data_url, params=data_params)
@@ -101,36 +84,27 @@ class PolymarketAPI:
             d = r.json()
             return (d.get("trades", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
 
-    async def place_order(self, market_id, side, size, price):
-        # FIX: send numbers, not strings
-        payload = {
-            "marketId": market_id,
-            "side": side.upper(),
-            "size": float(size),
-            "price": float(price),
-            "type": "limit",
-        }
+    async def place_order(self, token_id: str, side: str, size: float, price: float):
+        trade_side = side.upper()
+        if trade_side == "YES":
+            trade_side = "BUY"
+        elif trade_side == "NO":
+            trade_side = "SELL"
+        payload = {"token_id": token_id, "side": trade_side, "size": float(size), "price": float(price), "type": "limit"}
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.post(f"{self.api_base}/v1/orders", json=payload)
+            r = await c.post(f"{self.clob_base}/order", json=payload)
             r.raise_for_status()
             return r.json()
 
     async def cancel_order(self, order_id):
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.delete(f"{self.api_base}/v1/orders/{order_id}")
+            r = await c.delete(f"{self.clob_base}/order/{order_id}")
             r.raise_for_status()
             return r.json()
 
-    async def sell_position(self, market_id, outcome, size):
-        payload = {
-            "marketId": market_id,
-            "side": "SELL",
-            "size": float(size),
-            "price": 0.01,
-            "type": "limit",
-            "outcome": outcome,
-        }
+    async def sell_position(self, token_id: str, outcome: str, size: float):
+        payload = {"token_id": token_id, "side": "SELL", "size": float(size), "price": 0.01, "type": "limit"}
         async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.post(f"{self.api_base}/v1/orders", json=payload)
+            r = await c.post(f"{self.clob_base}/order", json=payload)
             r.raise_for_status()
             return r.json()

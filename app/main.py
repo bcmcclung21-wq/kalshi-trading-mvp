@@ -26,24 +26,24 @@ configure_logging()
 
 async def _run_cycle_loop(engine: TradingEngine, cashout: CashoutManager, interval_sec: int = 60):
     while True:
-        await asyncio.sleep(interval_sec)
-        if _cycle_lock.locked():
-            logger.warning("cycle_still_running_skipping")
-            continue
         try:
-            async with _cycle_lock:
-                try:
-                    cashout_actions = await asyncio.wait_for(cashout.evaluate_all(), timeout=60)
-                    if cashout_actions:
-                        logger.info("cashout_actions=%d", len(cashout_actions))
-                except Exception as e:
-                    logger.exception("cashout_eval_failed: %s", e)
-                result = await asyncio.wait_for(engine.run_cycle(), timeout=300)
-                logger.info("cycle_complete: %s", result)
+            if _cycle_lock.locked():
+                logger.warning("cycle_still_running_skipping")
+            else:
+                async with _cycle_lock:
+                    try:
+                        cashout_actions = await asyncio.wait_for(cashout.evaluate_all(), timeout=60)
+                        if cashout_actions:
+                            logger.info("cashout_actions=%d", len(cashout_actions))
+                    except Exception as e:
+                        logger.exception("cashout_eval_failed: %s", e)
+                    result = await asyncio.wait_for(engine.run_cycle(), timeout=300)
+                    logger.info("cycle_complete: %s", result)
         except asyncio.TimeoutError:
             logger.error("cycle_timeout_exceeded_300s")
         except Exception as e:
             logger.exception("cycle_failed: %s", e)
+        await asyncio.sleep(interval_sec)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
