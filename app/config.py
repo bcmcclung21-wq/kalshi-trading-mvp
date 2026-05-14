@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     polymarket_secret_key: str = ""
 
     auto_execute: bool = False       # SAFETY: default False
+    dry_run: bool = True  # SAFETY: default True until explicitly disabled
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
     same_day_only: bool = True
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
     max_spread_pct: float = 0.08
     max_daily_trades: int = 5
     max_risk_per_trade_usd: float = 50.0
+    bankroll_usd: float = 2500.0
 
 settings = Settings()
 

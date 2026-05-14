@@ -1,6 +1,9 @@
 from __future__ import annotations
+import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Request
+
+logger = logging.getLogger("app.dashboard")
 
 router = APIRouter()
 
@@ -29,8 +32,7 @@ async def dashboard(request: Request):
                 "url": market.url,
                 "active": market.ends_at > datetime.now(timezone.utc) if market.ends_at else False,
             })
-            if len(markets) >= 50:
-                break
+    logger.info("dashboard_markets_prepared count=%d", len(markets))
 
     trades = []
     if engine and hasattr(engine, "daily_stats"):

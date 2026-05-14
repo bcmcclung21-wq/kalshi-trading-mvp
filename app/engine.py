@@ -1,7 +1,6 @@
 from __future__ import annotations
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
@@ -69,6 +68,9 @@ class TradingEngine:
 
             pool, rejects = single_pool(market_dicts)
             logger.info("selector_pool size=%d rejects=%s", len(pool), rejects)
+            if not pool:
+                logger.warning("selector_pool_empty breakdown=%s", rejects)
+                return {"status": "no_pool", "trades": 0, "markets_scanned": len(markets), "rejects": rejects}
 
             candidates = []
             for m in pool:
@@ -84,7 +86,11 @@ class TradingEngine:
                 if cand:
                     candidates.append(cand)
                 else:
-                    logger.debug("candidate_rejected ticker=%s reason=%s", m.get("ticker"), reason)
+                    logger.info("candidate_rejected ticker=%s reason=%s", m.get("ticker"), reason)
+
+            if not candidates:
+                logger.warning("no_candidates_after_build pool=%d", len(pool))
+                return {"status": "no_candidates", "trades": 0, "pool_size": len(pool)}
 
             ranked = rank_candidates(candidates)
             if not ranked:
@@ -185,7 +191,7 @@ class TradingEngine:
     async def _execute_trades(self, selected, thresholds):
         executed = []
         auto_execute = settings.auto_execute
-        dry_run = not auto_execute
+        dry_run = not auto_execute or getattr(settings, "dry_run", False)
         for sel in selected:
             price = sel.entry_price
             legs = sel.legs
@@ -193,7 +199,7 @@ class TradingEngine:
             elif legs == 2: risk_pct = 0.01
             elif legs == 3: risk_pct = 0.0075
             else: risk_pct = 0.005
-            bankroll = float(os.getenv("BANKROLL_USD", "2500"))
+            bankroll = settings.bankroll_usd
             max_risk = min(thresholds.get("max_risk_per_trade_usd", 50.0), bankroll * risk_pct)
             size = max_risk / max(price, 0.01)
             size = min(size, 100.0)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import random
 from collections import defaultdict
 import logging
@@ -185,7 +185,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
                     market_date = parsed.astimezone(timezone.utc).date()
             if market_date is None and close_dt is not None:
                 market_date = close_dt.astimezone(timezone.utc).date()
-            if market_date != today_utc:
+            if market_date not in (today_utc, (datetime.now(timezone.utc) + timedelta(hours=12)).date()):
                 rejects["sports_not_today"] += 1
                 continue
         elif minutes > max_minutes:
@@ -202,7 +202,7 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             else:
                 rejects["missing_close_time"] += 1
                 continue
-            if compare_date != today_market_tz:
+            if not (today_market_tz <= compare_date <= (datetime.now(MARKET_TZ) + timedelta(hours=24)).date()):
                 rejects["not_same_day_settlement"] += 1
                 continue
 
