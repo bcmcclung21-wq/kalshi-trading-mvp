@@ -38,6 +38,10 @@ class Market(BaseModel):
     url: str = ""
     best_bid: float = 0.0
     best_ask: float = 1.0
+    market_type: str = "single"
+    close_time: str | None = None
+    tags: list = []
+    question: str = ""
 
 
 class MarketSnapshot(Base):

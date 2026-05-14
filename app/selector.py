@@ -44,6 +44,25 @@ def _extract_market_date(market: dict[str, Any]) -> date | None:
             continue
     return None
 
+
+def _infer_category_from_tags(market: dict[str, Any]) -> str | None:
+    tags = market.get("tags", [])
+    question = market.get("question") or market.get("title") or ""
+    text = " ".join([str(t.get("label", "")) if isinstance(t, dict) else str(t) for t in tags] + [question]).lower()
+    if any(k in text for k in ("crypto", "bitcoin", "ethereum", "btc", "eth", "token", "defi", "nft")):
+        return "crypto"
+    if any(k in text for k in ("election", "vote", "poll", "senate", "congress", "president", "governor", "trump", "biden")):
+        return "politics"
+    if any(k in text for k in ("sports", "nba", "nfl", "soccer", "baseball", "tennis", "game", "match", "team")):
+        return "sports"
+    if any(k in text for k in ("economy", "gdp", "inflation", "unemployment", "fed", "interest rate", "recession", "stock", "market")):
+        return "economics"
+    if any(k in text for k in ("climate", "weather", "temperature", "carbon", "emission", "warming")):
+        return "climate"
+    if any(k in text for k in ("tech", "ai", "apple", "google", "microsoft", "tesla", "elon", "chip", "phone", "app")):
+        return "tech"
+    return None
+
 def _best_effort_minutes(market: dict[str, Any], close_dt: datetime | None, now: datetime) -> float | None:
     if close_dt is not None:
         return (close_dt - now).total_seconds() / 60.0
@@ -103,6 +122,14 @@ def normalize_markets(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _parse_close_dt(market: dict[str, Any]) -> datetime | None:
     close_value = market.get("close_time") or market.get("expiration_time")
     if not close_value:
+        close_value = market.get("endDate")
+    if not close_value:
+        close_value = market.get("resolution_time")
+    if not close_value:
+        extracted = _extract_market_date(market)
+        if extracted:
+            return datetime(extracted.year, extracted.month, extracted.day, 23, 59, 59, tzinfo=timezone.utc)
+    if not close_value:
         return None
     try:
         text = str(close_value).replace("Z", "+00:00")
@@ -135,13 +162,19 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "missing_close_time": 0,
         "packaged_market": 0,
     }
-    valid_categories = {"sports", "politics", "crypto", "climate", "economics"}
+    valid_categories = {"sports", "politics", "crypto", "climate", "economics", "tech", "other", "entertainment", "science", "business"}
     now = datetime.now(timezone.utc)
     today_market_tz = datetime.now(MARKET_TZ).date()
     today_utc = datetime.now(timezone.utc).date()
 
     for market in markets:
         cat = str(market.get("category") or "unknown").lower()
+        if rejects["wrong_category"] < 3 and cat not in valid_categories:
+            logger.warning("wrong_category_sample ticker=%s cat=%s tags=%s", market.get("ticker", "?"), cat, market.get("tags", [])[:2])
+        if rejects["missing_close_time"] < 3 and not _parse_close_dt(market):
+            logger.warning("missing_close_time_sample ticker=%s keys=%s", market.get("ticker", "?"), list(market.keys())[:10])
+        if rejects["wrong_market_type"] < 3 and market.get("market_type") not in (None, "", "single"):
+            logger.warning("wrong_market_type_sample ticker=%s mt=%s", market.get("ticker", "?"), market.get("market_type"))
         if cat == "sports":
             max_hours = 24
         elif cat == "politics":
@@ -156,12 +189,21 @@ def single_pool(markets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
             max_hours = TUNING.max_settlement_window_hours
         max_minutes = max_hours * 60
 
-        if market.get("market_type") != "single":
+        mt = market.get("market_type")
+        if mt is None or mt == "":
+            market["market_type"] = "single"
+            mt = "single"
+        if mt != "single":
             rejects["wrong_market_type"] += 1
             continue
-        if market.get("category") not in valid_categories:
-            rejects["wrong_category"] += 1
-            continue
+        if cat not in valid_categories:
+            inferred = _infer_category_from_tags(market)
+            if inferred and inferred in valid_categories:
+                market["category"] = inferred
+                cat = inferred
+            else:
+                rejects["wrong_category"] += 1
+                continue
         if is_packaged_market(market):
             rejects["packaged_market"] += 1
             continue

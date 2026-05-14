@@ -56,7 +56,14 @@ class TradingEngine:
                     "spread": m.spread, "volume_24h": m.volume_24h,
                     "last_price": m.last_price, "ends_at": m.ends_at,
                     "best_bid": m.best_bid, "best_ask": m.best_ask,
-                    "market_type": "single", "legs": 1,
+                    "market_type": getattr(m, "market_type", "single"),
+                    "legs": 1,
+                    "close_time": getattr(m, "close_time", None),
+                    "expiration_time": getattr(m, "close_time", None),
+                    "endDate": getattr(m, "close_time", None),
+                    "tags": getattr(m, "tags", []),
+                    "question": getattr(m, "question", m.title),
+                    "volume": getattr(m, "volume_24h", 0),
                 }
                 ob = self.universe.get_orderbook(m.id)
                 if ob:
