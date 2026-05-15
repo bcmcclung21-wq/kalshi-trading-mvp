@@ -39,16 +39,26 @@ async def dashboard(request: Request):
     if engine and hasattr(engine, "daily_stats"):
         trades = engine.daily_stats.get("last_trades", [])
 
+    category_counts = {}
+    for m in markets:
+        cat = m.get("category", "other")
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "markets": markets,
         "markets_count": len(markets),
+        "category_breakdown": category_counts,
         "trades": trades,
+        "positions": engine.daily_stats.get("positions", []) if engine and hasattr(engine, "daily_stats") else [],
+        "alerts": engine.daily_stats.get("alerts", []) if engine and hasattr(engine, "daily_stats") else [],
         "balance": None,
         "auto_execute": getattr(settings, "auto_execute", False) if settings else False,
         "dry_run": getattr(settings, "dry_run", True) if settings else True,
         "allow_combos": getattr(settings, "allow_combos", False) if settings else False,
+        "cycle_interval_seconds": getattr(settings, "cycle_interval_seconds", None) if settings else None,
+        "cache_ttl_seconds": getattr(settings, "cache_ttl_seconds", None) if settings else None,
         "trades_today": engine.daily_stats["trades_today"] if engine else 0,
         "daily_pnl": engine.daily_stats["daily_pnl"] if engine else 0.0,
         "brier_score": engine.daily_stats["brier_score"] if engine else 0.0,
