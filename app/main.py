@@ -93,6 +93,8 @@ async def lifespan(app: FastAPI):
         await app.state._cycle_task
     except asyncio.CancelledError:
         pass
+    await universe.aclose()
+    await api.aclose()
 
 app = FastAPI(title="Poly Trading MVP", lifespan=lifespan)
 app.add_middleware(
