@@ -26,19 +26,26 @@ _cycle_lock = asyncio.Lock()
 # Worker role detection — CRITICAL: prevents duplicate work across uvicorn workers
 ENGINE_WORKER = os.environ.get("ENGINE_WORKER", "false").lower() == "true"
 
-async def _run_cycle_loop(engine: TradingEngine, cashout: CashoutManager, interval_sec: int = 60):
+async def _run_cycle_loop(engine: TradingEngine, cashout: CashoutManager, universe: UniverseService, interval_sec: int = 60):
     while True:
         try:
             if _cycle_lock.locked():
                 logger.warning("cycle_still_running_skipping")
             else:
                 async with _cycle_lock:
+                    # ---- CRITICAL: refresh markets & orderbooks before every cycle ----
+                    try:
+                        await asyncio.wait_for(universe.refresh(), timeout=120)
+                    except Exception as e:
+                        logger.exception("universe_refresh_failed: %s", e)
+
                     try:
                         cashout_actions = await asyncio.wait_for(cashout.evaluate_all(), timeout=60)
                         if cashout_actions:
                             logger.info("cashout_actions=%d", len(cashout_actions))
                     except Exception as e:
                         logger.exception("cashout_eval_failed: %s", e)
+
                     result = await asyncio.wait_for(engine.run_cycle(), timeout=300)
                     logger.info("cycle_complete: %s", result)
         except asyncio.TimeoutError:
@@ -61,6 +68,14 @@ async def lifespan(app: FastAPI):
     api = PolymarketAPI()
     universe = UniverseService()
     await universe.initialize()
+
+    # ---- CRITICAL: prime the cache before the engine starts ----
+    try:
+        await universe.refresh()
+        logger.info("universe_primed markets=%d", len(universe._markets))
+    except Exception as e:
+        logger.exception("universe_prime_failed: %s", e)
+
     calibration = CalibrationService()
     engine = TradingEngine(api, universe, calibration)
     cashout = CashoutManager(api)
@@ -73,7 +88,9 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
 
     if ENGINE_WORKER:
-        app.state.engine_task = asyncio.create_task(_run_cycle_loop(engine, cashout, interval_sec=60))
+        app.state.engine_task = asyncio.create_task(
+            _run_cycle_loop(engine, cashout, universe, interval_sec=60)
+        )
         logger.info("engine_worker_started worker=true")
     else:
         logger.info("api_worker_started worker=false")
