@@ -64,15 +64,33 @@ class UniverseService:
 
     def score_summary(self, raw_markets: list[dict]) -> list[Market]:
         markets: list[Market] = []
+        dropped: dict[str, int] = {"parse_failed": 0, "disallowed_category": 0}
         for raw in raw_markets:
             try:
                 transformed = self._transform_for_model(raw)
-                markets.append(Market.parse_obj(transformed))
+                market = Market.parse_obj(transformed)
+                if market.category not in ALLOWED_CATEGORIES:
+                    dropped["disallowed_category"] += 1
+                    logger.debug(
+                        "market_drop reason=disallowed_category id=%s category=%s liquidity=%s volume24h=%s",
+                        transformed.get("id"),
+                        market.category,
+                        transformed.get("liquidity"),
+                        transformed.get("volume24h"),
+                    )
+                    continue
+                markets.append(market)
             except Exception as exc:
+                dropped["parse_failed"] += 1
                 logger.debug("score_parse_failed err=%s", exc)
                 continue
-        markets = [m for m in markets if m.category in ALLOWED_CATEGORIES]
-        logger.info("score_summary parsed=%d", len(markets))
+        logger.info(
+            "score_summary raw=%d parsed=%d dropped_parse=%d dropped_category=%d",
+            len(raw_markets),
+            len(markets),
+            dropped["parse_failed"],
+            dropped["disallowed_category"],
+        )
         return markets
 
     async def _fetch_all_markets(self) -> List[dict]:
@@ -127,9 +145,11 @@ class UniverseService:
     async def _fetch_orderbooks_concurrent(self, max_concurrency: int = 20) -> None:
         self._orderbooks.clear()
         if not self._markets:
+            logger.warning("orderbook_fetch_skipped reason=no_markets")
             return
 
         semaphore = asyncio.Semaphore(max_concurrency)
+        stats = {"misses": 0, "failures": 0}
 
         async def _fetch_one(market) -> Optional[tuple]:
             async with semaphore:
@@ -148,6 +168,7 @@ class UniverseService:
                         ob = self._convert_clob_orderbook(data, token_id, market)
                         return (market.id, getattr(market, "slug", None), ob)
                 except Exception as e:
+                    stats["failures"] += 1
                     logger.warning("ob_fetch_fail market=%s token=%s error=%s", getattr(market, "id", "unknown"), str(token_id)[:16], e)
                 return None
 
@@ -158,6 +179,15 @@ class UniverseService:
                 self._orderbooks[mid] = ob
                 if slug:
                     self._orderbooks[slug] = ob
+            else:
+                stats["misses"] += 1
+        logger.info(
+            "orderbook_fetch_summary requested=%d fetched=%d misses=%d failures=%d",
+            len(self._markets),
+            len({m.id for m in self._markets if m.id in self._orderbooks}),
+            stats["misses"],
+            stats["failures"],
+        )
 
     @property
     def processing_latency_p99_ms(self) -> int:
