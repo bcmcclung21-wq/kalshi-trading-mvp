@@ -11,11 +11,11 @@ class RateLimitedLogFilter(logging.Filter):
 
     def filter(self, record):
         msg = record.getMessage()
-        if "candidate_model ticker=" in msg and "REJECTED" not in msg:
+        if 'candidate_model ticker=' in msg and 'REJECTED' not in msg:
             self.cycle_count += 1
             if self.cycle_count > self.max_per_cycle:
                 return False
-        elif "cycle_complete:" in msg:
+        elif 'cycle_complete:' in msg:
             self.cycle_count = 0
         return True
 
@@ -23,7 +23,7 @@ class RateLimitedLogFilter(logging.Filter):
 def configure_logging():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+        format='%(asctime)s [%(levelname)s] %(message)s',
         stream=sys.stdout,
     )
     root = logging.getLogger()

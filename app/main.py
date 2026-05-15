@@ -71,26 +71,26 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.cashout = cashout
     app.state.settings = settings
-    logger.info("Mode: %s", "DRY" if settings.dry_run else "LIVE")
 
     if ENGINE_WORKER:
-        app.state._cycle_task = asyncio.create_task(_run_cycle_loop(engine, cashout, interval_sec=60))
+        app.state.engine_task = asyncio.create_task(_run_cycle_loop(engine, cashout, interval_sec=60))
         logger.info("engine_worker_started worker=true")
     else:
         logger.info("api_worker_started worker=false")
 
     yield
 
-    if ENGINE_WORKER and hasattr(app.state, '_cycle_task'):
-        app.state._cycle_task.cancel()
-        try:
-            await app.state._cycle_task
-        except asyncio.CancelledError:
-            pass
-    await universe.aclose()
-    from app.http_client import SharedHTTPClient
-    await SharedHTTPClient.close()
-    await api.aclose()
+    if ENGINE_WORKER:
+        if hasattr(app.state, 'engine_task'):
+            app.state.engine_task.cancel()
+            try:
+                await app.state.engine_task
+            except asyncio.CancelledError:
+                pass
+        await app.state.universe.aclose()
+        from app.http_client import SharedHTTPClient
+        await SharedHTTPClient.close()
+        await app.state.api.aclose()
 
 app = FastAPI(title="Poly Trading MVP", lifespan=lifespan)
 app.add_middleware(

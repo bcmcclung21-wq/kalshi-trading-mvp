@@ -1,8 +1,7 @@
 """Shared persistent HTTP client with HTTP/2 multiplexing."""
+import httpx
 import asyncio
 from typing import Optional
-
-import httpx
 
 
 class SharedHTTPClient:
@@ -17,7 +16,10 @@ class SharedHTTPClient:
                     cls._instance = httpx.AsyncClient(
                         timeout=30,
                         headers={"User-Agent": "PolyTradingMVP/1.4"},
-                        limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+                        limits=httpx.Limits(
+                            max_connections=100,
+                            max_keepalive_connections=50,
+                        ),
                         http2=True,
                     )
         return cls._instance
