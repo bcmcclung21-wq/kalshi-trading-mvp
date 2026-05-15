@@ -65,29 +65,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.exception("db_init_failed: %s", e)
 
-    api = PolymarketAPI()
+    # Always init a universe (API workers need it for /healthz /dashboard)
     universe = UniverseService()
     await universe.initialize()
-
-    # ---- CRITICAL: prime the cache before the engine starts ----
-    try:
-        await universe.refresh()
-        logger.info("universe_primed markets=%d", len(universe._markets))
-    except Exception as e:
-        logger.exception("universe_prime_failed: %s", e)
-
-    calibration = CalibrationService()
-    engine = TradingEngine(api, universe, calibration)
-    cashout = CashoutManager(api)
-
-    app.state.api = api
     app.state.universe = universe
-    app.state.calibration = calibration
-    app.state.engine = engine
-    app.state.cashout = cashout
     app.state.settings = settings
 
     if ENGINE_WORKER:
+        api = PolymarketAPI()
+        calibration = CalibrationService()
+        engine = TradingEngine(api, universe, calibration)
+        cashout = CashoutManager(api)
+        app.state.api = api
+        app.state.calibration = calibration
+        app.state.engine = engine
+        app.state.cashout = cashout
         app.state.engine_task = asyncio.create_task(
             _run_cycle_loop(engine, cashout, universe, interval_sec=60)
         )
@@ -97,17 +89,17 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    if ENGINE_WORKER:
-        if hasattr(app.state, 'engine_task'):
-            app.state.engine_task.cancel()
-            try:
-                await app.state.engine_task
-            except asyncio.CancelledError:
-                pass
+    if ENGINE_WORKER and hasattr(app.state, 'engine_task'):
+        app.state.engine_task.cancel()
+        try:
+            await app.state.engine_task
+        except asyncio.CancelledError:
+            pass
     await app.state.universe.aclose()
     from app.http_client import SharedHTTPClient
     await SharedHTTPClient.close()
-    await app.state.api.aclose()
+    if hasattr(app.state, "api"):
+        await app.state.api.aclose()
 
 app = FastAPI(title="Poly Trading MVP", lifespan=lifespan)
 app.add_middleware(
