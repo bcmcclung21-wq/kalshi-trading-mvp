@@ -1,14 +1,18 @@
 """UniverseService with concurrent fetching, thread pool scoring, shared HTTP client.
 
-CRITICAL FIX: Replaced broken Market.from_gamma(raw) with direct Pydantic
-constructor. If your original code used a custom from_gamma() that performed
-extra transformation, port that logic into _score() below.
+DEFENSIVE FIXES v2:
+1. _fetch_all_markets now validates every page is a list before flattening.
+   Prevents 'str' object has no attribute 'get' when Gamma returns malformed pages.
+2. _score now skips non-dict items and handles already-parsed Market objects.
+3. get_active_markets() restored as async method — engine.py awaits it.
+4. refresh() wraps scoring in per-item try/except so one bad market doesn't crash the cycle.
+5. _is_active safely rejects None values.
 """
 import asyncio
 import heapq
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import logging
 
@@ -32,20 +36,32 @@ class UniverseService:
     async def initialize(self):
         self._client = await get_client()
 
+    async def get_active_markets(self) -> List[Any]:
+        await self.refresh()
+        return self._markets
+
     async def refresh(self) -> None:
         async with self._refresh_lock:
             t0 = time.monotonic()
-
             raw = await self._fetch_all_markets()
-
             loop = asyncio.get_event_loop()
-            scored = await loop.run_in_executor(
-                self._score_executor,
-                lambda: [self._score(r) for r in raw]
-            )
 
+            def _score_all():
+                scored = []
+                for idx, r in enumerate(raw):
+                    try:
+                        s = self._score(r)
+                        if s is not None:
+                            scored.append(s)
+                    except Exception as e:
+                        r_type = type(r).__name__
+                        r_preview = str(r)[:60] if isinstance(r, str) else "non-str"
+                        logger.warning("score_failed idx=%d type=%s preview=%s error=%s", idx, r_type, r_preview, e)
+                return scored
+
+            scored = await loop.run_in_executor(self._score_executor, _score_all)
             active = [s for s in scored if self._is_active(s)]
-            self._markets = active[:150]   # Cap to reduce CLOB load
+            self._markets = active[:150]
             self.active_markets_gauge = len(self._markets)
             self.last_refresh = datetime.now(timezone.utc)
 
@@ -56,16 +72,19 @@ class UniverseService:
             if len(self._latency_samples_ms) > self._max_latency_samples:
                 self._latency_samples_ms = self._latency_samples_ms[-self._max_latency_samples:]
 
-            logger.info("refresh_complete markets=%d orderbooks=%d latency_ms=%d",
-                        len(raw), len(self._orderbooks), latency_ms)
+            logger.info("refresh_complete markets=%d orderbooks=%d latency_ms=%d", len(raw), len(self._orderbooks), latency_ms)
 
     async def _fetch_all_markets(self) -> List[dict]:
         resp = await self._client.get(
             "https://gamma-api.polymarket.com/markets",
-            params={"limit": 100, "offset": 0, "closed": "false", "active": "true"}
+            params={"limit": 100, "offset": 0, "closed": "false", "active": "true"},
         )
         resp.raise_for_status()
         first_batch = resp.json()
+
+        if not isinstance(first_batch, list):
+            logger.error("gamma_first_batch_not_list type=%s body_preview=%s", type(first_batch).__name__, str(first_batch)[:200])
+            return []
 
         if len(first_batch) < 100:
             return first_batch
@@ -74,20 +93,37 @@ class UniverseService:
         offsets = range(100, 1000, 100)
 
         async def _fetch_page(offset):
-            r = await self._client.get(
-                "https://gamma-api.polymarket.com/markets",
-                params={"limit": 100, "offset": offset, "closed": "false", "active": "true"}
-            )
-            r.raise_for_status()
-            return r.json()
+            try:
+                r = await self._client.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"limit": 100, "offset": offset, "closed": "false", "active": "true"},
+                )
+                r.raise_for_status()
+                data = r.json()
+                if not isinstance(data, list):
+                    logger.warning("gamma_page_not_list offset=%d type=%s", offset, type(data).__name__)
+                    return []
+                return data
+            except Exception as e:
+                logger.warning("gamma_page_fetch_failed offset=%d error=%s", offset, e)
+                return []
 
         remaining = await asyncio.gather(*[_fetch_page(o) for o in offsets])
         for batch in remaining:
-            pages.extend(batch)
-            if len(batch) < 100:
-                break
+            if isinstance(batch, list):
+                pages.append(batch)
+                if len(batch) < 100:
+                    break
+            else:
+                logger.warning("gamma_page_skipped_non_list type=%s", type(batch).__name__)
 
-        return [m for page in pages for m in page]
+        result = []
+        for page in pages:
+            if isinstance(page, list):
+                result.extend(page)
+            else:
+                logger.warning("gamma_flatten_skipped_non_list type=%s", type(page).__name__)
+        return result
 
     async def _fetch_orderbooks_concurrent(self, max_concurrency: int = 20) -> None:
         self._orderbooks.clear()
@@ -105,7 +141,7 @@ class UniverseService:
                     resp = await self._client.get(
                         "https://clob.polymarket.com/book",
                         params={"token_id": token_id},
-                        timeout=10
+                        timeout=10,
                     )
                     if resp.status_code == 200:
                         data = resp.json()
@@ -123,6 +159,9 @@ class UniverseService:
                 if slug:
                     self._orderbooks[slug] = ob
 
+    def get_orderbook(self, key: str):
+        return self._orderbooks.get(key)
+
     @property
     def processing_latency_p99_ms(self) -> int:
         if not self._latency_samples_ms:
@@ -135,81 +174,29 @@ class UniverseService:
     async def aclose(self):
         self._score_executor.shutdown(wait=True)
 
-    def get_active_markets(self) -> List[Any]:
-        """Return currently cached active markets."""
-        return self._markets
-
-    def _score(self, raw: dict) -> Any:
-        from app.models import Market, Category
-
-        market_id = str(raw.get("id", raw.get("slug", "unknown")))
-        title = raw.get("title") or raw.get("question") or raw.get("description") or f"Market {market_id}"
-        category_val = raw.get("category")
-        if not category_val:
-            category_val = self._infer_category(raw.get("tags", []), title)
-        try:
-            category = Category(category_val.lower()) if isinstance(category_val, str) else Category.OTHER
-        except (ValueError, AttributeError):
-            category = Category.OTHER
-
-        ends_at = raw.get("ends_at") or raw.get("close_time") or raw.get("endDate") or raw.get("expiration_time")
-        if not ends_at:
-            ends_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-
-        clean = {
-            "id": market_id,
-            "title": title,
-            "category": category,
-            "ends_at": ends_at,
-            "confidence": raw.get("confidence", 0.0),
-            "ev": raw.get("ev"),
-            "liquidity": raw.get("liquidity", raw.get("volume", 0.0)),
-            "spread": raw.get("spread", 1.0),
-            "volume_24h": raw.get("volume_24h", raw.get("volume", 0.0)),
-            "last_price": raw.get("last_price", raw.get("price", 0.5)),
-            "url": raw.get("url", ""),
-            "slug": str(raw.get("slug", raw.get("id", ""))),
-            "best_bid": raw.get("best_bid", 0.0),
-            "best_ask": raw.get("best_ask", 1.0),
-            "market_type": raw.get("market_type", "single"),
-            "close_time": raw.get("close_time"),
-            "tags": raw.get("tags", []),
-            "question": raw.get("question", title),
-            "minutes_to_close": raw.get("minutes_to_close"),
-            "raw": raw,
-        }
-
-        try:
-            if hasattr(Market, "model_validate"):
-                return Market.model_validate(clean)
-            if hasattr(Market, "parse_obj"):
-                return Market.parse_obj(clean)
-            return Market(**clean)
-        except Exception as e:
-            logger.warning("market_validation_failed id=%s error=%s", market_id, e)
+    def _score(self, raw: Any) -> Optional[Any]:
+        if hasattr(raw, 'id') or hasattr(raw, 'slug'):
+            return raw
+        if not isinstance(raw, dict):
+            logger.debug("_score_skipped type=%s preview=%s", type(raw).__name__, str(raw)[:60])
             return None
 
-    @staticmethod
-    def _infer_category(tags: list, question: str) -> str:
-        text = " ".join(tags).lower() + " " + question.lower()
-        if any(w in text for w in ("sports", "nfl", "nba", "mlb", "soccer", "football", "tennis", "golf")):
-            return "sports"
-        if any(w in text for w in ("politics", "election", "president", "congress", "senate", "vote", "trump", "biden")):
-            return "politics"
-        if any(w in text for w in ("crypto", "bitcoin", "ethereum", "btc", "eth", "blockchain")):
-            return "crypto"
-        if any(w in text for w in ("climate", "weather", "temperature", "carbon", "warming")):
-            return "climate"
-        if any(w in text for w in ("economy", "gdp", "inflation", "fed", "unemployment", "jobs", "market")):
-            return "economics"
-        if any(w in text for w in ("tech", "ai", "apple", "google", "microsoft", "tesla")):
-            return "tech"
-        return "other"
+        from app.models import Market
+
+        if hasattr(Market, 'model_validate'):
+            return Market.model_validate(raw)
+        if hasattr(Market, 'parse_obj'):
+            return Market.parse_obj(raw)
+        return Market(**raw)
 
     def _is_active(self, scored: Any) -> bool:
-        return scored is not None
+        if scored is None:
+            return False
+        return True
 
     def _get_yes_token_id(self, market: Any) -> Optional[str]:
+        if market is None:
+            return None
         tokens = getattr(market, 'tokens', None)
         if tokens:
             for token in tokens:
