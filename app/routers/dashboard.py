@@ -80,6 +80,17 @@ async def markets(request: Request):
     }
 
 
+@router.get("/api/mode")
+async def get_mode(request: Request):
+    settings = request.app.state.settings
+    return {
+        "status": "ok",
+        "mode": "DRY" if settings.dry_run else "LIVE",
+        "dry_run": settings.dry_run,
+        "auto_execute": settings.auto_execute,
+    }
+
+
 @router.post("/api/mode")
 async def set_mode(request: Request):
     body = await request.json()

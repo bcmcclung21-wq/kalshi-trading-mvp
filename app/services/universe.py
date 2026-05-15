@@ -30,6 +30,7 @@ class UniverseService:
         self._latency_samples_ms: List[int] = []
         self._max_latency_samples = 5000
         self._client = None
+        self._zero_parsed_streak = 0
 
     async def initialize(self):
         self._client = await get_client()
@@ -63,6 +64,7 @@ class UniverseService:
             active = [s for s in scored if self._is_active(s)]
             self._markets = active[:150]   # Cap to reduce CLOB load
 
+            self._update_pipeline_health(len(raw), len(self._markets))
             await self._fetch_orderbooks_concurrent()
 
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -112,6 +114,19 @@ class UniverseService:
             dropped["inactive"],
         )
         return markets
+
+
+    def _update_pipeline_health(self, raw_count: int, parsed_count: int) -> None:
+        if raw_count > 0 and parsed_count == 0:
+            self._zero_parsed_streak += 1
+            logger.error(
+                "pipeline_alert zero_parsed_streak=%d raw=%d parsed=%d",
+                self._zero_parsed_streak,
+                raw_count,
+                parsed_count,
+            )
+        else:
+            self._zero_parsed_streak = 0
 
     async def _fetch_all_markets(self) -> List[dict]:
         """Fetch all market pages concurrently with defensive validation."""
@@ -244,6 +259,8 @@ class UniverseService:
             t['title'] = t.pop('question')
 
         category = str(t.get('category') or '').strip().lower()
+        if not category:
+            category = self._infer_category_from_tags(t.get('tags', []), t.get('title') or t.get('question') or '')
         t['category'] = CATEGORY_MAP.get(category, category) or None
 
         if 'ends_at' not in t:
@@ -256,6 +273,30 @@ class UniverseService:
             t['active'] = True
 
         return t
+
+
+    def _infer_category_from_tags(self, tags: Any, text: str = "") -> str:
+        values: list[str] = []
+        if isinstance(tags, list):
+            for tag in tags:
+                if isinstance(tag, dict):
+                    values.extend([str(tag.get("slug") or ""), str(tag.get("label") or ""), str(tag.get("name") or "")])
+                else:
+                    values.append(str(tag))
+        tag_text = " ".join(v.lower() for v in values if v).strip()
+        haystack = f"{tag_text} {str(text or '').lower()}"
+        checks = {
+            "sports": ["sport", "nba", "nfl", "mlb", "soccer", "football", "tennis"],
+            "politics": ["politic", "election", "president", "senate", "congress", "government"],
+            "crypto": ["crypto", "bitcoin", "ethereum", "solana", "token", "defi"],
+            "climate": ["climate", "temperature", "weather", "hurricane", "emissions"],
+            "economics": ["econom", "inflation", "gdp", "fed", "rates", "recession"],
+            "tech": ["tech", "ai", "openai", "software", "chip", "semiconductor"],
+        }
+        for category, needles in checks.items():
+            if any(n in haystack for n in needles):
+                return category
+        return "unknown"
 
     def _is_active(self, scored: Any) -> bool:
         if scored is None:
