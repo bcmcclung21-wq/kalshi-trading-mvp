@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any
 import logging
 
 from app.http_client import get_client
+from app.models import ALLOWED_CATEGORIES, CATEGORY_MAP, Market
 
 logger = logging.getLogger(__name__)
 
@@ -46,27 +47,7 @@ class UniverseService:
 
             loop = asyncio.get_event_loop()
 
-            def _score_all():
-                scored = []
-                fail_count = 0
-                first_fail = None
-                for idx, r in enumerate(raw):
-                    try:
-                        s = self._score(r)
-                        if s is not None:
-                            scored.append(s)
-                    except Exception as e:
-                        fail_count += 1
-                        if first_fail is None:
-                            first_fail = (idx, type(r).__name__, str(e)[:120])
-                if fail_count > 0:
-                    logger.warning("score_summary failed=%d/%d first_fail_idx=%d err=%s",
-                                   fail_count, len(raw), first_fail[0], first_fail[2])
-                else:
-                    logger.info("score_summary all_passed=%d", len(scored))
-                return scored
-
-            scored = await loop.run_in_executor(self._score_executor, _score_all)
+            scored = await loop.run_in_executor(self._score_executor, self.score_summary, raw)
 
             active = [s for s in scored if self._is_active(s)]
             self._markets = active[:150]   # Cap to reduce CLOB load
@@ -78,8 +59,21 @@ class UniverseService:
             if len(self._latency_samples_ms) > self._max_latency_samples:
                 self._latency_samples_ms = self._latency_samples_ms[-self._max_latency_samples:]
 
-            logger.info("refresh_complete markets=%d orderbooks=%d latency_ms=%d",
-                       len(raw), len(self._orderbooks), latency_ms)
+            logger.info("refresh_complete raw=%d parsed=%d orderbooks=%d latency_ms=%d",
+                       len(raw), len(self._markets), len(self._orderbooks), latency_ms)
+
+    def score_summary(self, raw_markets: list[dict]) -> list[Market]:
+        markets: list[Market] = []
+        for raw in raw_markets:
+            try:
+                transformed = self._transform_for_model(raw)
+                markets.append(Market.parse_obj(transformed))
+            except Exception as exc:
+                logger.debug("score_parse_failed err=%s", exc)
+                continue
+        markets = [m for m in markets if m.category in ALLOWED_CATEGORIES]
+        logger.info("score_summary parsed=%d", len(markets))
+        return markets
 
     async def _fetch_all_markets(self) -> List[dict]:
         """Fetch all market pages concurrently with defensive validation."""
@@ -141,6 +135,7 @@ class UniverseService:
             async with semaphore:
                 token_id = self._get_yes_token_id(market)
                 if not token_id:
+                    logger.debug("ob_fetch_skip market=%s reason=missing_token_id", getattr(market, 'id', 'unknown'))
                     return None
                 try:
                     resp = await self._client.get(
@@ -153,7 +148,7 @@ class UniverseService:
                         ob = self._convert_clob_orderbook(data, token_id, market)
                         return (market.id, getattr(market, "slug", None), ob)
                 except Exception as e:
-                    logger.debug("ob_fetch_fail token=%s... error=%s", str(token_id)[:16], e)
+                    logger.warning("ob_fetch_fail market=%s token=%s error=%s", getattr(market, "id", "unknown"), str(token_id)[:16], e)
                 return None
 
         results = await asyncio.gather(*[_fetch_one(m) for m in self._markets])
@@ -185,8 +180,6 @@ class UniverseService:
 
         transformed = self._transform_for_model(raw)
 
-        from app.models import Market
-
         if hasattr(Market, 'model_validate'):
             return Market.model_validate(transformed)
         elif hasattr(Market, 'parse_obj'):
@@ -200,11 +193,14 @@ class UniverseService:
         if 'question' in t and 'title' not in t:
             t['title'] = t.pop('question')
 
-        if 'category' not in t:
-            t['category'] = ''
+        category = str(t.get('category') or '').strip().lower()
+        t['category'] = CATEGORY_MAP.get(category, category) or None
 
         if 'ends_at' not in t:
-            t['ends_at'] = None
+            t['ends_at'] = t.get('endDate') or t.get('closeTime') or t.get('close_time')
+
+        if 'raw' not in t:
+            t['raw'] = raw
 
         if 'active' not in t:
             t['active'] = True
@@ -220,14 +216,19 @@ class UniverseService:
         if market is None:
             return None
 
-        tokens = getattr(market, 'tokens', None)
+        tokens = getattr(market, 'tokens', None) or (market.raw.get('tokens') if getattr(market, 'raw', None) else None)
         if tokens:
             for token in tokens:
-                outcome = getattr(token, 'outcome', '') or ''
-                if outcome.lower() in ('yes', 'yes token'):
-                    return getattr(token, 'token_id', None) or getattr(token, 'id', None)
+                outcome = (getattr(token, 'outcome', None) or (token.get('outcome') if isinstance(token, dict) else '') or '')
+                if str(outcome).lower() in ('yes', 'yes token'):
+                    return getattr(token, 'token_id', None) or getattr(token, 'id', None) or (token.get('token_id') if isinstance(token, dict) else None) or (token.get('id') if isinstance(token, dict) else None)
 
-        return getattr(market, 'yes_token_id', None) or getattr(market, 'token_id', None)
+        return (
+            getattr(market, 'yes_token_id', None)
+            or getattr(market, 'token_id', None)
+            or (market.raw.get('token_id') if getattr(market, 'raw', None) else None)
+            or (market.raw.get('clobTokenIds', [None])[0] if isinstance(market.raw.get('clobTokenIds') if getattr(market, 'raw', None) else None, list) else None)
+        )
 
     def _convert_clob_orderbook(self, data: dict, token_id: str, market: Any) -> Any:
         return data
