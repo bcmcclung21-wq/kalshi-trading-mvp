@@ -45,6 +45,17 @@ class UniverseService:
 
             raw = await self._fetch_all_markets()
 
+            logger.info("refresh_start raw=%d", len(raw))
+            if raw and isinstance(raw[0], dict):
+                sample = raw[0]
+                logger.info(
+                    "raw_sample id=%s category=%s active=%s keys=%s",
+                    sample.get("id"),
+                    sample.get("category"),
+                    sample.get("active"),
+                    list(sample.keys())[:12],
+                )
+
             loop = asyncio.get_event_loop()
 
             scored = await loop.run_in_executor(self._score_executor, self.score_summary, raw)
@@ -64,11 +75,14 @@ class UniverseService:
 
     def score_summary(self, raw_markets: list[dict]) -> list[Market]:
         markets: list[Market] = []
-        dropped: dict[str, int] = {"parse_failed": 0, "disallowed_category": 0}
+        dropped: dict[str, int] = {"parse_failed": 0, "disallowed_category": 0, "inactive": 0}
         for raw in raw_markets:
             try:
                 transformed = self._transform_for_model(raw)
                 market = Market.parse_obj(transformed)
+                if not bool(transformed.get("active", True)):
+                    dropped["inactive"] += 1
+                    continue
                 if market.category not in ALLOWED_CATEGORIES:
                     dropped["disallowed_category"] += 1
                     logger.debug(
@@ -90,6 +104,12 @@ class UniverseService:
             len(markets),
             dropped["parse_failed"],
             dropped["disallowed_category"],
+        )
+        logger.info(
+            "filter_status in=%d out=%d dropped_inactive=%d",
+            len(raw_markets) - dropped["parse_failed"] - dropped["disallowed_category"],
+            len(markets),
+            dropped["inactive"],
         )
         return markets
 
@@ -173,14 +193,14 @@ class UniverseService:
                 return None
 
         results = await asyncio.gather(*[_fetch_one(m) for m in self._markets])
-        for res in results:
-            if res:
-                mid, slug, ob = res
-                self._orderbooks[mid] = ob
-                if slug:
-                    self._orderbooks[slug] = ob
-            else:
+        for result in results:
+            if result is None:
                 stats["misses"] += 1
+                continue
+            mid, slug, ob = result
+            self._orderbooks[mid] = ob
+            if slug:
+                self._orderbooks[slug] = ob
         logger.info(
             "orderbook_fetch_summary requested=%d fetched=%d misses=%d failures=%d",
             len(self._markets),
