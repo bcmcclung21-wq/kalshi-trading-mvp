@@ -239,12 +239,13 @@ class AdaptiveRateLimiter:
 
 
 class AsyncIngestionPipeline:
-    def __init__(self, cache: MarketCache, discovery: MarketDiscoveryEngine, metrics: IngestionMetrics, queue_size: int = 20_000) -> None:
+    def __init__(self, cache: MarketCache, discovery: MarketDiscoveryEngine, metrics: IngestionMetrics, queue_size: int = 20_000, dedup_ttl_seconds: int = 300) -> None:
         self.cache = cache
         self.discovery = discovery
         self.metrics = metrics
         self.queue: asyncio.Queue[tuple[str, dict[str, Any], MarketUpdateVersion]] = asyncio.Queue(maxsize=queue_size)
-        self.seen_market_updates: set[str] = set()
+        self._seen_digests: OrderedDict[str, float] = OrderedDict()
+        self._dedup_ttl = dedup_ttl_seconds
         self.last_versions: dict[str, MarketUpdateVersion] = {}
         self._seq = 0
 
@@ -254,10 +255,18 @@ class AsyncIngestionPipeline:
 
     async def enqueue(self, ticker: str, payload: dict[str, Any], version: MarketUpdateVersion) -> None:
         digest = f"{ticker}:{version.source_ts_ms}:{version.sequence}"
-        if digest in self.seen_market_updates:
+        now = time.time()
+        while self._seen_digests:
+            oldest_digest, oldest_ts = next(iter(self._seen_digests.items()))
+            if now - oldest_ts > self._dedup_ttl:
+                self._seen_digests.pop(oldest_digest)
+            else:
+                break
+        if digest in self._seen_digests:
             self.metrics.duplicate_count += 1
             return
-        self.seen_market_updates.add(digest)
+        self._seen_digests[digest] = now
+        self._seen_digests.move_to_end(digest)
         await self.queue.put((ticker, payload, version))
         self.metrics.queue_depth = self.queue.qsize()
 

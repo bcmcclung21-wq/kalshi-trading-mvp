@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -21,10 +22,11 @@ class MarketCacheEntry:
 
 
 class MarketDeduplicator:
-    def __init__(self, price_threshold: float = 0.01, min_recheck_seconds: float = 300):
-        self.cache: dict[str, MarketCacheEntry] = {}
+    def __init__(self, price_threshold: float = 0.01, min_recheck_seconds: float = 300, max_size: int = 500):
+        self.cache: OrderedDict[str, MarketCacheEntry] = OrderedDict()
         self.price_threshold = price_threshold
         self.min_recheck_seconds = min_recheck_seconds
+        self.max_size = max_size
 
     def should_evaluate(self, ticker: str, current_price: float) -> bool:
         now = time.time()
@@ -37,6 +39,9 @@ class MarketDeduplicator:
 
     def update(self, ticker: str, current_price: float, edge: float):
         self.cache[ticker] = MarketCacheEntry(last_price=current_price, last_evaluated=time.time(), edge=edge)
+        self.cache.move_to_end(ticker)
+        while len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
 
 class TradingEngine:
     def __init__(self, api, universe, calibration):

@@ -29,42 +29,47 @@ class PolymarketAPI:
             self.headers["POLYMARKET-API-SECRET"] = self.api_secret
         if self.passphrase:
             self.headers["POLYMARKET-PASSPHRASE"] = self.passphrase
+        self._public_client = httpx.AsyncClient(
+            timeout=30,
+            headers={"User-Agent": "PolyTradingMVP/1.3"},
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
+        self._auth_client = httpx.AsyncClient(
+            timeout=30,
+            headers={**self.headers, "User-Agent": "PolyTradingMVP/1.3"},
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
 
     async def get_markets(self, limit=100, offset=0, closed=False, tag=None):
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(
-                f"{self.gamma_base}/markets",
-                params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})},
-            )
-            r.raise_for_status()
-            return r.json()
+        r = await self._public_client.get(
+            f"{self.gamma_base}/markets",
+            params={"limit": limit, "offset": offset, "closed": str(closed).lower(), **({"tag": tag} if tag else {})},
+        )
+        r.raise_for_status()
+        return r.json()
 
     async def get_market(self, market_id):
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(f"{self.gamma_base}/markets/{market_id}")
-            r.raise_for_status()
-            return r.json()
+        r = await self._public_client.get(f"{self.gamma_base}/markets/{market_id}")
+        r.raise_for_status()
+        return r.json()
 
     async def get_orderbook(self, token_id: str):
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(f"{self.clob_base}/book", params={"token_id": token_id})
-            r.raise_for_status()
-            return r.json()
+        r = await self._public_client.get(f"{self.clob_base}/book", params={"token_id": token_id}, timeout=10)
+        r.raise_for_status()
+        return r.json()
 
     async def get_balances(self):
-        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.get(f"{self.api_base}/v1/account/balances")
-            r.raise_for_status()
-            return r.json()
+        r = await self._auth_client.get(f"{self.api_base}/v1/account/balances")
+        r.raise_for_status()
+        return r.json()
 
     async def fetch_with_retry(self, url: str, params: dict | None = None, retries: int = 3):
         last_error = None
         for i in range(retries):
             try:
-                async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-                    r = await c.get(url, params=params)
-                    r.raise_for_status()
-                    return r.json()
+                r = await self._auth_client.get(url, params=params)
+                r.raise_for_status()
+                return r.json()
             except httpx.HTTPStatusError as e:
                 request_url = str(e.request.url) if e.request else url
                 logger.warning(
@@ -94,11 +99,10 @@ class PolymarketAPI:
         return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
 
     async def get_trades(self, limit=100):
-        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.get(f"{self.data_base}/trades", params={"limit": limit})
-            r.raise_for_status()
-            d = r.json()
-            return (d.get("trades", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+        r = await self._auth_client.get(f"{self.data_base}/trades", params={"limit": limit})
+        r.raise_for_status()
+        d = r.json()
+        return (d.get("trades", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
 
     async def place_order(self, token_id: str, side: str, size: float, price: float):
         trade_side = side.upper()
@@ -114,16 +118,14 @@ class PolymarketAPI:
             "price": float(price),
             "type": "limit",
         }
-        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.post(f"{self.clob_base}/order", json=payload)
-            r.raise_for_status()
-            return r.json()
+        r = await self._auth_client.post(f"{self.clob_base}/order", json=payload)
+        r.raise_for_status()
+        return r.json()
 
     async def cancel_order(self, order_id):
-        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.delete(f"{self.clob_base}/order/{order_id}")
-            r.raise_for_status()
-            return r.json()
+        r = await self._auth_client.delete(f"{self.clob_base}/order/{order_id}")
+        r.raise_for_status()
+        return r.json()
 
     async def sell_position(self, token_id: str, outcome: str, size: float):
         payload = {
@@ -133,7 +135,10 @@ class PolymarketAPI:
             "price": 0.01,
             "type": "limit",
         }
-        async with httpx.AsyncClient(timeout=30, headers=self.headers) as c:
-            r = await c.post(f"{self.clob_base}/order", json=payload)
-            r.raise_for_status()
-            return r.json()
+        r = await self._auth_client.post(f"{self.clob_base}/order", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+    async def aclose(self) -> None:
+        await self._public_client.aclose()
+        await self._auth_client.aclose()

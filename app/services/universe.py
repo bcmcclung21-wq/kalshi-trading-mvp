@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
 import os
-import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
@@ -26,8 +27,9 @@ class UniverseService:
         self._client = httpx.AsyncClient(
             timeout=30,
             headers={"User-Agent": "PolyTradingMVP/1.3"},
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
         )
+        self._score_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scorer")
         self._orderbooks = {}
         self._cycle_id = 0
         self._consecutive_orderbook_zero = 0
@@ -47,9 +49,10 @@ class UniverseService:
     def processing_latency_p99_ms(self) -> int:
         if not self._latency_samples_ms:
             return 0
-        if len(self._latency_samples_ms) == 1:
-            return int(self._latency_samples_ms[0])
-        return int(statistics.quantiles(self._latency_samples_ms, n=100, method="inclusive")[98])
+        if len(self._latency_samples_ms) <= 100:
+            return int(max(self._latency_samples_ms))
+        index = max(1, int(len(self._latency_samples_ms) * 0.01))
+        return int(heapq.nlargest(index, self._latency_samples_ms)[-1])
 
     async def get_active_markets(self):
         stale = self._last_refresh is None or (datetime.now(timezone.utc) - self._last_refresh) > timedelta(minutes=5)
@@ -68,7 +71,8 @@ class UniverseService:
             raw = await self._fetch_raw()
             fetch_duration_ms = int((time.perf_counter() - fetch_started) * 1000)
 
-            scored = [self._score(r) for r in raw]
+            loop = asyncio.get_running_loop()
+            scored = await loop.run_in_executor(self._score_executor, lambda: [self._score(r) for r in raw])
             now = datetime.now(timezone.utc)
             active = [m for m in scored if m.ends_at > now and m.liquidity > 100 and m.spread < 0.15]
             self._markets = active
@@ -148,27 +152,36 @@ class UniverseService:
         self._orderbooks = {}
         markets_to_fetch = self._markets[:100]
 
-        for m in markets_to_fetch:
-            try:
-                token_id = self._get_yes_token_id(m)
-                if not token_id:
-                    continue
+        semaphore = asyncio.Semaphore(15)
 
-                resp = await self._client.get(
-                    f"{self.clob_base}/book",
-                    params={"token_id": token_id},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    orderbook = self._convert_clob_orderbook(data, token_id, m)
-                    self._orderbooks[m.id] = orderbook
-                    self._orderbooks[m.slug] = orderbook
-                else:
-                    logger.debug("orderbook_fetch_failed %s status=%s", token_id, resp.status_code)
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                logger.debug("orderbook_fetch_exception %s: %s", getattr(m, "slug", m.id), e)
+        async def _fetch_one(market: Market):
+            async with semaphore:
+                token_id = self._get_yes_token_id(market)
+                if not token_id:
+                    return None
+                try:
+                    resp = await self._client.get(f"{self.clob_base}/book", params={"token_id": token_id}, timeout=10)
+                    if resp.status_code != 200:
+                        logger.debug("orderbook_fetch_failed %s status=%s", token_id, resp.status_code)
+                        return None
+                    orderbook = self._convert_clob_orderbook(resp.json(), token_id, market)
+                    return (market.id, market.slug, orderbook)
+                except Exception as e:
+                    logger.debug("orderbook_fetch_exception %s: %s", getattr(market, "slug", market.id), e)
+                    return None
+
+        results = await asyncio.gather(*[_fetch_one(m) for m in markets_to_fetch])
+        for result in results:
+            if not result:
+                continue
+            mid, slug, orderbook = result
+            self._orderbooks[mid] = orderbook
+            if slug:
+                self._orderbooks[slug] = orderbook
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+        self._score_executor.shutdown(wait=True)
 
     def _get_yes_token_id(self, market: Market) -> str | None:
         raw = getattr(market, "raw", None)
