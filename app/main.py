@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.calibration import CalibrationService
 from app.cashout import CashoutManager
-from app.config import settings, WALLET_ADDRESS
+from app.config import settings
 from app.db import init_db
 from app.engine import TradingEngine
 from app.polymarket import PolymarketAPI

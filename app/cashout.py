@@ -40,11 +40,8 @@ class CashoutManager:
             return []
         if not settings.auto_execute or settings.dry_run:
             return []
-        try:
-            positions = await self.api.get_positions(limit=100)
-        except Exception as e:
-            logger.warning("cashout_positions_fetch_failed: %s", e)
-            return []
+        logger.info("cashout_skipped: positions API dependency removed")
+        positions = []
 
         actions = []
         for pos in positions:

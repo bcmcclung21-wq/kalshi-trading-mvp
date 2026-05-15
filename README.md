@@ -21,7 +21,7 @@ A clean, scalable, singles-first Polymarket US trading application.
 
 ## Recommended runtime variables
 - `APP_NAME=Poly Trading MVP`
-- `AUTO_EXECUTE=false` while validating credentials
+- `AUTO_EXECUTE=true` after credential validation to allow live execution
 - `ALLOW_COMBOS=false`
 
 No wallet private key, passphrase, signature type, or funder address are required for the Polymarket US SDK path.

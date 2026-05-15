@@ -71,6 +71,8 @@ class TradingEngine:
         }
         self._learning_lock = asyncio.Lock()
         self._deduplicator = MarketDeduplicator()
+        self._open_positions: dict[str, dict] = {}
+        self._max_total_positions = 20
 
     async def run_cycle(self):
         try:
@@ -295,7 +297,17 @@ class TradingEngine:
         if max_daily <= 0:
             return []
         max_positions = thresholds.get("max_positions", 10)
-        return candidates[:min(max_daily, max_positions)]
+        filtered = []
+        for cand in candidates:
+            mid = str(getattr(cand, "ticker", "") or "")
+            if mid in self._open_positions:
+                logger.info("risk_block: already_have_position market_id=%s", mid)
+                continue
+            if len(self._open_positions) >= self._max_total_positions:
+                logger.info("risk_block: global_max_positions reached=%d", len(self._open_positions))
+                break
+            filtered.append(cand)
+        return filtered[:min(max_daily, max_positions)]
 
     async def _execute_trades(self, selected, thresholds):
         executed = []
@@ -343,6 +355,8 @@ class TradingEngine:
                 try:
                     result = await self.api.place_order(token_id, sel.side, size, price)
                     info.update({"status": "executed", "order_id": result.get("id", "")})
+                    self._open_positions[sel.ticker] = {"size": float(size), "side": sel.side, "token_id": token_id}
+                    logger.info("position_recorded: market_id=%s size=%.4f", sel.ticker, size)
                     self.daily_stats["trades_today"] += 1
                 except Exception as e:
                     info.update({"status": "failed", "error": str(e)})

@@ -6,8 +6,6 @@ import os
 
 import httpx
 
-from app.config import WALLET_ADDRESS
-
 logger = logging.getLogger("app.polymarket")
 
 
@@ -20,8 +18,6 @@ class PolymarketAPI:
         self.data_base = os.getenv("POLYMARKET_DATA_BASE", "https://data-api.polymarket.com")
         self.api_base = os.getenv("POLYMARKET_API_BASE", "https://api.polymarket.us")
         self.clob_base = os.getenv("POLYMARKET_CLOB_BASE", "https://clob.polymarket.com")
-        self.wallet_address = WALLET_ADDRESS
-
         self.headers = {}
         if self.api_key:
             self.headers["POLYMARKET-API-KEY"] = self.api_key
@@ -89,14 +85,8 @@ class PolymarketAPI:
         return None
 
     async def get_positions(self, limit=100):
-        data_url = f"{self.data_base}/positions"
-        if not self.wallet_address:
-            logger.warning("positions_fetch_skipped reason=missing_wallet limit=%s", limit)
-            return []
-        data_params = {"user": self.wallet_address, "limit": limit}
-        logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
-        d = await self.fetch_with_retry(data_url, params=data_params)
-        return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+        logger.info("positions_fetch_skipped: wallet_id dependency removed limit=%s", limit)
+        return []
 
     async def get_trades(self, limit=100):
         r = await self._auth_client.get(f"{self.data_base}/trades", params={"limit": limit})
