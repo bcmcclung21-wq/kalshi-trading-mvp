@@ -4,18 +4,19 @@ import sys
 
 
 class RateLimitedLogFilter(logging.Filter):
-    def __init__(self, max_per_cycle=100):
+    def __init__(self, max_per_cycle=50):
         super().__init__()
         self.max_per_cycle = max_per_cycle
         self.cycle_count = 0
 
     def filter(self, record):
         msg = record.getMessage()
-        if 'candidate_model ticker=' in msg and 'REJECTED' not in msg:
+        # Block ALL score_failed logs after threshold (they flood at 1000s/sec)
+        if 'score_failed' in msg:
             self.cycle_count += 1
             if self.cycle_count > self.max_per_cycle:
                 return False
-        elif 'cycle_complete:' in msg:
+        elif 'cycle_complete:' in msg or 'refresh_complete' in msg:
             self.cycle_count = 0
         return True
 
@@ -27,6 +28,6 @@ def configure_logging():
         stream=sys.stdout,
     )
     root = logging.getLogger()
-    root.addFilter(RateLimitedLogFilter(max_per_cycle=100))
+    root.addFilter(RateLimitedLogFilter(max_per_cycle=50))
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

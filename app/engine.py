@@ -20,7 +20,6 @@ class CacheEntry:
     last_evaluated: float
     edge: float
 
-
 class MarketDeduplicator:
     __slots__ = ("cache", "price_threshold", "min_recheck_seconds", "max_size", "hits", "misses")
 
