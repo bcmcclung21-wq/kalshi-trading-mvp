@@ -8,6 +8,7 @@ import asyncio
 import heapq
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 import logging
 
@@ -25,6 +26,8 @@ class UniverseService:
         self._latency_samples_ms: List[int] = []
         self._max_latency_samples = 5000
         self._client = None
+        self.last_refresh: Optional[datetime] = None
+        self.active_markets_gauge = 0
 
     async def initialize(self):
         self._client = await get_client()
@@ -43,6 +46,8 @@ class UniverseService:
 
             active = [s for s in scored if self._is_active(s)]
             self._markets = active[:150]   # Cap to reduce CLOB load
+            self.active_markets_gauge = len(self._markets)
+            self.last_refresh = datetime.now(timezone.utc)
 
             await self._fetch_orderbooks_concurrent()
 
@@ -130,17 +135,79 @@ class UniverseService:
     async def aclose(self):
         self._score_executor.shutdown(wait=True)
 
+    def get_active_markets(self) -> List[Any]:
+        """Return currently cached active markets."""
+        return self._markets
+
     def _score(self, raw: dict) -> Any:
-        from app.models import Market
-        if hasattr(Market, 'model_validate'):
-            return Market.model_validate(raw)
-        elif hasattr(Market, 'parse_obj'):
-            return Market.parse_obj(raw)
-        else:
-            return Market(**raw)
+        from app.models import Market, Category
+
+        market_id = str(raw.get("id", raw.get("slug", "unknown")))
+        title = raw.get("title") or raw.get("question") or raw.get("description") or f"Market {market_id}"
+        category_val = raw.get("category")
+        if not category_val:
+            category_val = self._infer_category(raw.get("tags", []), title)
+        try:
+            category = Category(category_val.lower()) if isinstance(category_val, str) else Category.OTHER
+        except (ValueError, AttributeError):
+            category = Category.OTHER
+
+        ends_at = raw.get("ends_at") or raw.get("close_time") or raw.get("endDate") or raw.get("expiration_time")
+        if not ends_at:
+            ends_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+        clean = {
+            "id": market_id,
+            "title": title,
+            "category": category,
+            "ends_at": ends_at,
+            "confidence": raw.get("confidence", 0.0),
+            "ev": raw.get("ev"),
+            "liquidity": raw.get("liquidity", raw.get("volume", 0.0)),
+            "spread": raw.get("spread", 1.0),
+            "volume_24h": raw.get("volume_24h", raw.get("volume", 0.0)),
+            "last_price": raw.get("last_price", raw.get("price", 0.5)),
+            "url": raw.get("url", ""),
+            "slug": str(raw.get("slug", raw.get("id", ""))),
+            "best_bid": raw.get("best_bid", 0.0),
+            "best_ask": raw.get("best_ask", 1.0),
+            "market_type": raw.get("market_type", "single"),
+            "close_time": raw.get("close_time"),
+            "tags": raw.get("tags", []),
+            "question": raw.get("question", title),
+            "minutes_to_close": raw.get("minutes_to_close"),
+            "raw": raw,
+        }
+
+        try:
+            if hasattr(Market, "model_validate"):
+                return Market.model_validate(clean)
+            if hasattr(Market, "parse_obj"):
+                return Market.parse_obj(clean)
+            return Market(**clean)
+        except Exception as e:
+            logger.warning("market_validation_failed id=%s error=%s", market_id, e)
+            return None
+
+    @staticmethod
+    def _infer_category(tags: list, question: str) -> str:
+        text = " ".join(tags).lower() + " " + question.lower()
+        if any(w in text for w in ("sports", "nfl", "nba", "mlb", "soccer", "football", "tennis", "golf")):
+            return "sports"
+        if any(w in text for w in ("politics", "election", "president", "congress", "senate", "vote", "trump", "biden")):
+            return "politics"
+        if any(w in text for w in ("crypto", "bitcoin", "ethereum", "btc", "eth", "blockchain")):
+            return "crypto"
+        if any(w in text for w in ("climate", "weather", "temperature", "carbon", "warming")):
+            return "climate"
+        if any(w in text for w in ("economy", "gdp", "inflation", "fed", "unemployment", "jobs", "market")):
+            return "economics"
+        if any(w in text for w in ("tech", "ai", "apple", "google", "microsoft", "tesla")):
+            return "tech"
+        return "other"
 
     def _is_active(self, scored: Any) -> bool:
-        return True
+        return scored is not None
 
     def _get_yes_token_id(self, market: Any) -> Optional[str]:
         tokens = getattr(market, 'tokens', None)
