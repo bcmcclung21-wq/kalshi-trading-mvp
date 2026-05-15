@@ -82,9 +82,10 @@ class LiquidityEngine:
             self.inactive_markets.add(ticker)
         return snap
 
-    def persist_state(self) -> None:
-        if not self.persistence_enabled:
+    def persist_state(self, chunk_size: int = 1000) -> None:
+        if not self.persistence_enabled or not self.market_state:
             return
+
         try:
             with SessionLocal() as db:
                 values = []
@@ -105,20 +106,31 @@ class LiquidityEngine:
                         "liquidity_score": state.execution_score,
                         "imbalance": 0.0,
                         "microprice": state.midpoint_history[-1] if state.midpoint_history else 0.0,
-                        "status": "active" if ticker in self.active_liquid_markets else ("stale" if ticker in self.stale_markets else "inactive"),
+                        "status": (
+                            "active" if ticker in self.active_liquid_markets
+                            else ("stale" if ticker in self.stale_markets else "inactive")
+                        ),
                     })
-                if values:
-                    chunk_size = 1000
-                    for i in range(0, len(values), chunk_size):
-                        chunk = values[i:i + chunk_size]
-                        stmt = insert(MarketMicrostructureState).values(chunk)
-                        stmt = stmt.on_conflict_do_update(
-                            index_elements=["ticker"],
-                            set_={c: stmt.excluded[c] for c in MarketMicrostructureState.__table__.columns.keys() if c != "ticker"},
-                        )
-                        db.execute(stmt)
-                    db.commit()
+
+                if not values:
+                    return
+
+                for i in range(0, len(values), chunk_size):
+                    chunk = values[i:i + chunk_size]
+                    stmt = insert(MarketMicrostructureState).values(chunk)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["ticker"],
+                        set_={
+                            c: stmt.excluded[c]
+                            for c in MarketMicrostructureState.__table__.columns.keys()
+                            if c != "ticker"
+                        }
+                    )
+                    db.execute(stmt)
+                db.commit()
+
+                logger.info("persist_complete rows=%d chunks=%d", len(values), (len(values) + chunk_size - 1) // chunk_size)
+
         except SQLAlchemyError as exc:
             self.persistence_enabled = False
-            logger.warning("liquidity_state_persist_failed degraded_mode=true error=%s", exc)
-            return
+            logger.error("persist_failed degraded_mode=true error=%s", exc)

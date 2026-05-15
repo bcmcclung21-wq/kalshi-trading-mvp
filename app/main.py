@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import os
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -15,14 +16,15 @@ from app.cashout import CashoutManager
 from app.config import settings, WALLET_ADDRESS
 from app.db import init_db
 from app.engine import TradingEngine
-from app.observability import configure_logging
 from app.polymarket import PolymarketAPI
 from app.services.universe import UniverseService
 from app.routers import dashboard
 
 logger = logging.getLogger("app.main")
 _cycle_lock = asyncio.Lock()
-configure_logging()
+
+# Worker role detection — CRITICAL: prevents duplicate work across uvicorn workers
+ENGINE_WORKER = os.environ.get("ENGINE_WORKER", "false").lower() == "true"
 
 async def _run_cycle_loop(engine: TradingEngine, cashout: CashoutManager, interval_sec: int = 60):
     while True:
@@ -47,6 +49,9 @@ async def _run_cycle_loop(engine: TradingEngine, cashout: CashoutManager, interv
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.logging_config import configure_logging
+    configure_logging()
+
     try:
         db_result = init_db()
         logger.info("db_init schema=%s created=%s", db_result.schema_version, db_result.tables_created)
@@ -55,6 +60,7 @@ async def lifespan(app: FastAPI):
 
     api = PolymarketAPI()
     universe = UniverseService()
+    await universe.initialize()
     calibration = CalibrationService()
     engine = TradingEngine(api, universe, calibration)
     cashout = CashoutManager(api)
@@ -67,33 +73,23 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     logger.info("Mode: %s", "DRY" if settings.dry_run else "LIVE")
 
-    logger.info("startup_wallet_connected wallet=%s", WALLET_ADDRESS or "not_configured")
-    if not WALLET_ADDRESS:
-        logger.error("CRITICAL: WALLET_ADDRESS not configured. Positions, balances, and trades will fail.")
-    if not api.api_key or not api.api_secret:
-        logger.error("CRITICAL: POLYMARKET_KEY_ID or POLYMARKET_SECRET_KEY not configured. Authenticated API calls will fail.")
-    try:
-        positions = await api.get_positions(limit=1)
-        logger.info("startup_positions_fetch_ok items=%d", len(positions))
-    except Exception as e:
-        logger.warning("startup_positions_fetch_failed: %s", e)
+    if ENGINE_WORKER:
+        app.state._cycle_task = asyncio.create_task(_run_cycle_loop(engine, cashout, interval_sec=60))
+        logger.info("engine_worker_started worker=true")
+    else:
+        logger.info("api_worker_started worker=false")
 
-    try:
-        await universe.refresh()
-        logger.info("initial_universe_refresh markets=%d", len(universe._markets))
-    except Exception as e:
-        logger.exception("initial_universe_refresh_failed: %s", e)
-
-    app.state._cycle_task = asyncio.create_task(
-        _run_cycle_loop(engine, cashout, interval_sec=60)
-    )
     yield
-    app.state._cycle_task.cancel()
-    try:
-        await app.state._cycle_task
-    except asyncio.CancelledError:
-        pass
+
+    if ENGINE_WORKER and hasattr(app.state, '_cycle_task'):
+        app.state._cycle_task.cancel()
+        try:
+            await app.state._cycle_task
+        except asyncio.CancelledError:
+            pass
     await universe.aclose()
+    from app.http_client import SharedHTTPClient
+    await SharedHTTPClient.close()
     await api.aclose()
 
 app = FastAPI(title="Poly Trading MVP", lifespan=lifespan)

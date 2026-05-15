@@ -264,7 +264,7 @@ class AsyncIngestionPipeline:
         while self._seen_digests:
             oldest_digest, oldest_ts = next(iter(self._seen_digests.items()))
             if now - oldest_ts > self._dedup_ttl:
-                self._seen_digests.pop(oldest_digest)
+                del self._seen_digests[oldest_digest]
             else:
                 break
         if digest in self._seen_digests:
@@ -272,11 +272,12 @@ class AsyncIngestionPipeline:
             return
         self._seen_digests[digest] = now
         self._seen_digests.move_to_end(digest)
+        self.metrics.enqueued_count += 1
         try:
             self.queue.put_nowait((ticker, payload, version))
         except asyncio.QueueFull:
             self.metrics.dropped_count += 1
-            logger.warning("ingestion_queue_full dropped=%s", ticker)
+            logger.warning("queue_full dropped=%s", ticker)
             return
         self.metrics.queue_depth = self.queue.qsize()
 
