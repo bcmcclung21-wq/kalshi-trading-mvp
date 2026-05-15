@@ -93,10 +93,27 @@ class PolymarketAPI:
         if not self.wallet_address:
             logger.warning("positions_fetch_skipped reason=missing_wallet limit=%s", limit)
             return []
-        data_params = {"user": self.wallet_address, "limit": limit}
         logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
-        d = await self.fetch_with_retry(data_url, params=data_params)
-        return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+
+        last_error: Exception | None = None
+        for key in ("user", "wallet"):
+            try:
+                d = await self.fetch_with_retry(data_url, params={key: self.wallet_address, "limit": limit})
+                logger.info("positions_fetch_ok param=%s", key)
+                return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                logger.warning("positions_fetch_param_failed param=%s status=%s", key, exc.response.status_code if exc.response else "unknown")
+                if exc.response is None or exc.response.status_code != 400:
+                    break
+            except Exception as exc:
+                last_error = exc
+                logger.warning("positions_fetch_param_failed param=%s error=%s", key, exc)
+                break
+
+        if last_error:
+            raise last_error
+        return []
 
     async def get_trades(self, limit=100):
         r = await self._auth_client.get(f"{self.data_base}/trades", params={"limit": limit})
