@@ -143,7 +143,7 @@ class TradingEngine:
                 ticker = str(m.get("ticker") or "")
                 if not self._deduplicator.should_evaluate(ticker, current_mid):
                     dedup_skipped += 1
-                    logger.debug("Skipping %s — no price change since last eval", ticker)
+                    logger.debug("evaluating_market_skip ticker=%s reason=no_price_change", ticker)
                     continue
                 cand, reason = build_candidate(m, ob, all_markets=market_dicts)
                 if cand:

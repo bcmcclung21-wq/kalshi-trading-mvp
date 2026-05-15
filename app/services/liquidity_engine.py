@@ -108,12 +108,15 @@ class LiquidityEngine:
                         "status": "active" if ticker in self.active_liquid_markets else ("stale" if ticker in self.stale_markets else "inactive"),
                     })
                 if values:
-                    stmt = insert(MarketMicrostructureState).values(values)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["ticker"],
-                        set_={c: stmt.excluded[c] for c in MarketMicrostructureState.__table__.columns.keys() if c != "ticker"},
-                    )
-                    db.execute(stmt)
+                    chunk_size = 1000
+                    for i in range(0, len(values), chunk_size):
+                        chunk = values[i:i + chunk_size]
+                        stmt = insert(MarketMicrostructureState).values(chunk)
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=["ticker"],
+                            set_={c: stmt.excluded[c] for c in MarketMicrostructureState.__table__.columns.keys() if c != "ticker"},
+                        )
+                        db.execute(stmt)
                     db.commit()
         except SQLAlchemyError as exc:
             self.persistence_enabled = False
