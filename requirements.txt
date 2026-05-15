@@ -14,3 +14,4 @@ polymarket-us>=0.1.0
 
 requests>=2.28.0
 eth-account>=0.13.0
+httpx[http2]>=0.27.0

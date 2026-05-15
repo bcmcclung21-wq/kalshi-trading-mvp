@@ -15,33 +15,49 @@ logger = logging.getLogger("app.engine")
 
 
 @dataclass(slots=True)
-class MarketCacheEntry:
+class CacheEntry:
     last_price: float
     last_evaluated: float
     edge: float
 
 
 class MarketDeduplicator:
+    __slots__ = ("cache", "price_threshold", "min_recheck_seconds", "max_size", "hits", "misses")
+
     def __init__(self, price_threshold: float = 0.01, min_recheck_seconds: float = 300, max_size: int = 500):
-        self.cache: OrderedDict[str, MarketCacheEntry] = OrderedDict()
+        self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self.price_threshold = price_threshold
         self.min_recheck_seconds = min_recheck_seconds
         self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
 
     def should_evaluate(self, ticker: str, current_price: float) -> bool:
         now = time.time()
         entry = self.cache.get(ticker)
         if entry is None:
+            self.misses += 1
             return True
         price_moved = abs(current_price - entry.last_price) > self.price_threshold
         time_expired = (now - entry.last_evaluated) > self.min_recheck_seconds
-        return price_moved or time_expired
+        should = price_moved or time_expired
+        if should:
+            self.misses += 1
+        else:
+            self.hits += 1
+        return should
 
-    def update(self, ticker: str, current_price: float, edge: float):
-        self.cache[ticker] = MarketCacheEntry(last_price=current_price, last_evaluated=time.time(), edge=edge)
+    def update(self, ticker: str, current_price: float, edge: float) -> None:
+        now = time.time()
+        self.cache[ticker] = CacheEntry(current_price, now, edge)
         self.cache.move_to_end(ticker)
         while len(self.cache) > self.max_size:
             self.cache.popitem(last=False)
+
+    @property
+    def hit_rate(self) -> float:
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
 
 class TradingEngine:
     def __init__(self, api, universe, calibration):
