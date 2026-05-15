@@ -319,15 +319,24 @@ class TradingEngine:
             }
 
             if not dry_run and auto_execute and token_id:
+                logger.info("executing_live_order ticker=%s token_id=%s side=%s size=%.4f", sel.ticker, token_id, sel.side, size)
                 try:
                     result = await self.api.place_order(token_id, sel.side, size, price)
                     info.update({"status": "executed", "order_id": result.get("id", "")})
                     self.daily_stats["trades_today"] += 1
                 except Exception as e:
                     info.update({"status": "failed", "error": str(e)})
-            elif not dry_run and auto_execute and not token_id:
-                info.update({"status": "failed", "error": "missing_token_id"})
             else:
-                info["status"] = "dry_run"
+                logger.info(
+                    "dry_run_order_skipped ticker=%s dry_run=%s auto_execute=%s has_token=%s",
+                    sel.ticker,
+                    dry_run,
+                    auto_execute,
+                    bool(token_id),
+                )
+                if not dry_run and auto_execute and not token_id:
+                    info.update({"status": "failed", "error": "missing_token_id"})
+                else:
+                    info["status"] = "dry_run"
             executed.append(info)
         return executed

@@ -587,407 +587,126 @@ tr:last-child td { border-bottom: none; }
 </div>
 
 <script>
-/* ═══════════════════════════════════════════════════════════════
-   POLY TRADING MVP — ANALYTICAL DASHBOARD
-   ═══════════════════════════════════════════════════════════════ */
+(async function initDashboard() {
+  const els = {
+    mode: document.getElementById('health-mode'),
+    markets: document.getElementById('health-markets'),
+    cycle: document.getElementById('health-cycle'),
+    cache: document.getElementById('health-cache'),
+    table: document.getElementById('trade-table-body') || document.getElementById('trades-body'),
+    lastUpdate: document.getElementById('last-update') || document.getElementById('last-updated'),
+    positions: document.getElementById('positions-body'),
+    pnl: document.getElementById('pnl-body'),
+    alerts: document.getElementById('alerts-list')
+  };
 
-let autoExecute = false;
-let allowCombos = false;
-let refreshInterval = null;
-let pollMs = 10000;
-const MAX_POLL_MS = 60000;
-let lastData = null;
-
-/* ─── Utilities ─── */
-const $ = (sel) => document.querySelector(sel);
-const fmt = (n, d=2) => typeof n === 'number' ? n.toFixed(d) : '--';
-const fmtPct = (n) => typeof n === 'number' ? (n*100).toFixed(1)+'%' : '--';
-const fmtBps = (n) => typeof n === 'number' ? n.toFixed(0)+' bps' : '--';
-const fmtUSD = (n) => typeof n === 'number' ? '$'+n.toFixed(2) : '--';
-const timeAgo = (iso) => {
-  if(!iso) return 'never';
-  const diff = (Date.now() - new Date(iso).getTime())/1000;
-  if(diff<60) return Math.round(diff)+'s ago';
-  if(diff<3600) return Math.round(diff/60)+'m ago';
-  return Math.round(diff/3600)+'h ago';
-};
-const toast = (msg, type='info') => {
-  const el = document.createElement('div');
-  el.className = 'toast '+type;
-  el.textContent = msg;
-  $('#toast-container').appendChild(el);
-  setTimeout(()=>el.remove(), 4000);
-};
-
-/* ─── Sparkline renderer (CSS bars) ─── */
-function renderSparkline(id, values, colorClass='green') {
-  const el = document.getElementById(id);
-  if(!el || !values || !values.length) return;
-  const max = Math.max(...values.map(Math.abs), 0.001);
-  el.innerHTML = values.map(v => {
-    const h = Math.max(4, Math.min(100, (Math.abs(v)/max)*100));
-    const cls = v>=0 ? 'green' : 'red';
-    return `<div class="spark-bar" style="height:${h}%;background:var(--accent-${cls});"></div>`;
-  }).join('');
-}
-
-/* ─── Fetch ─── */
-async function fetchDashboard() {
-  try {
-    const res = await fetch('/dash');
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-    if(pollMs > 10000) { pollMs = 10000; startRefresh(); }
-    lastData = data;
-    render(data);
-  } catch(err) {
-    console.error('Dashboard fetch error:', err);
-    $('#system-status').className = 'status-pill error';
-    $('#system-status').innerHTML = '<span class="dot"></span> Connection Lost';
-    backOff();
-  }
-}
-
-function backOff() {
-  pollMs = Math.min(pollMs*2, MAX_POLL_MS);
-  startRefresh();
-}
-
-function startRefresh() {
-  if(refreshInterval) clearInterval(refreshInterval);
-  fetchDashboard();
-  refreshInterval = setInterval(() => {
-    if(!document.hidden) fetchDashboard();
-  }, pollMs);
-}
-
-/* ─── Render ─── */
-function render(data) {
-  if(!data || typeof data !== 'object') return;
-
-  /* Header */
-  $('#last-updated').textContent = 'Last sync: '+timeAgo(data.timestamp);
-  $('#system-status').className = 'status-pill '+(data.status==='ok'?'ok':'error');
-  $('#system-status').innerHTML = '<span class="dot"></span> '+(data.status==='ok'?'System Online':'Degraded');
-  $('#footer-ts').textContent = new Date().toLocaleString();
-
-  autoExecute = !!data.auto_execute;
-  allowCombos = !!data.allow_combos;
-  updateToggles();
-
-  /* KPIs */
-  const ds = data.daily_stats || {};
-  const winRate = data.win_rate || ds.win_rate || 0;
-  const brier = data.brier_score || ds.brier_score || 0;
-  const pnl = ds.daily_pnl || 0;
-  const tradesToday = ds.trades_today || (data.trades?data.trades.length:0);
-
-  $('#kpi-winrate').textContent = fmtPct(winRate);
-  $('#kpi-winrate').className = 'kpi-value '+(winRate>=0.5?'pos':winRate>0?'neu':'neg');
-  $('#kpi-brier').textContent = fmt(brier, 4);
-  $('#kpi-brier').className = 'kpi-value '+(brier<0.2?'pos':brier<0.35?'neu':'neg');
-  $('#bar-brier').style.width = Math.min(100, (brier/0.5)*100)+'%';
-  $('#kpi-pnl').textContent = fmtUSD(pnl);
-  $('#kpi-pnl').className = 'kpi-value '+(pnl>=0?'pos':'neg');
-  $('#kpi-trades').textContent = tradesToday;
-  $('#bar-trades').style.width = Math.min(100, (tradesToday/5)*100)+'%';
-
-  /* Mock sparklines from daily_stats if available, else random-ish */
-  const mockSpark = (n) => Array.from({length:12},(_,i)=>Math.sin(i+n)*0.3+(Math.random()*0.2-0.1));
-  renderSparkline('spark-winrate', ds.win_history || mockSpark(1));
-  renderSparkline('spark-pnl', ds.pnl_history || mockSpark(2));
-
-  /* Markets */
-  renderMarkets(data.markets || []);
-
-  /* Trades */
-  renderTrades(data.trades || []);
-
-  /* Audit & Learning */
-  renderAudit(data);
-  renderLearning(data);
-  renderCategories(data);
-
-  /* Health */
-  $('#health-markets').textContent = (data.markets_count||0)+' / '+(data.markets_count||0);
-  $('#health-mode').textContent = data.dry_run ? 'Dry' : 'Live';
-  $('#health-mode').className = 'kpi-value '+(data.dry_run?'pos':'neg');
-}
-
-/* ─── Markets Table ─── */
-let marketCache = [];
-function renderMarkets(markets) {
-  marketCache = markets;
-  $('#market-count').textContent = '('+markets.length+')';
-  const tbody = $('#markets-body');
-  if(!markets.length) {
-    tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><div class="empty-icon">📡</div>No markets match current filters.</div></td></tr>';
-    return;
-  }
-  const filter = ($('#cat-filter').value||'all').toLowerCase();
-  const search = ($('#market-search').value||'').toLowerCase();
-
-  const filtered = markets.filter(m => {
-    const cat = (m.category||'').toLowerCase();
-    const title = (m.title||'').toLowerCase();
-    return (filter==='all' || cat===filter) && title.includes(search);
-  });
-
-  tbody.innerHTML = filtered.map(m => {
-    const conf = typeof m.confidence==='number'?m.confidence:0;
-    const spread = typeof m.spread==='number'?m.spread:1;
-    const liq = typeof m.liquidity==='number'?m.liquidity:0;
-    const edge = typeof m.edge_bps==='number'?m.edge_bps:0;
-    const active = m.active!==false;
-    const confPct = Math.round(conf*100);
-    const confColor = conf>0.75?'green':conf>0.5?'amber':'red';
-    const spreadColor = spread<0.03?'green':spread<0.08?'amber':'red';
-    return `<tr>
-      <td><div class="tooltip" data-tip="${escapeHtml(m.id||'')}"><strong>${escapeHtml(m.title||'Untitled')}</strong></div></td>
-      <td><span class="chip">${escapeHtml(m.category||'other')}</span></td>
-      <td>
-        <div style="font-family:var(--font-mono);font-size:12px;font-weight:600;color:var(--accent-${confColor});">${confPct}%</div>
-        <div class="bar-bg" style="height:4px;margin-top:3px;"><div class="bar-fill ${confColor}" style="width:${confPct}%"></div></div>
-      </td>
-      <td><span class="ticker ${edge>=200?'pos':edge>=50?'neu':'neg'}">${fmtBps(edge)}</span></td>
-      <td><span class="badge badge-${spreadColor}">${(spread*100).toFixed(2)}¢</span></td>
-      <td style="font-family:var(--font-mono);font-size:12px;">${liq>=1000?(liq/1000).toFixed(1)+'K':liq.toFixed(0)}</td>
-      <td>${active?'<span class="badge badge-green">● Open</span>':'<span class="badge badge-red">Closed</span>'}</td>
-      <td><a href="${escapeHtml(m.url||'#')}" target="_blank" class="btn" style="padding:4px 10px;font-size:11px;">View →</a></td>
-    </tr>`;
-  }).join('');
-}
-
-$('#cat-filter').addEventListener('change', ()=>renderMarkets(marketCache));
-$('#market-search').addEventListener('input', ()=>renderMarkets(marketCache));
-
-/* ─── Trades Table ─── */
-function renderTrades(trades) {
-  const tbody = $('#trades-body');
-  if(!trades.length) {
-    tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><div class="empty-icon">📭</div>No trades executed yet. Cycle is running in dry-run mode.</div></td></tr>';
-    return;
-  }
-  tbody.innerHTML = trades.map((t,i) => {
-    const status = t.status||'unknown';
-    const pnl = t.realized_pnl || t.pnl || 0;
-    const statusClass = status==='executed'?'green':status==='dry_run'?'blue':status==='failed'?'red':'amber';
-    const pnlClass = pnl>0?'pos':pnl<0?'neg':'neu';
-    return `<tr>
-      <td style="color:var(--text-muted);font-size:11px;">${t.timestamp?timeAgo(t.timestamp):'--'}</td>
-      <td><strong>${escapeHtml(t.market_title||'Trade #'+(i+1))}</strong></td>
-      <td><span class="badge badge-blue">${t.side||'BUY'}</span></td>
-      <td class="ticker">${fmt(t.price,4)}</td>
-      <td class="ticker">${fmt(t.size,2)}</td>
-      <td class="ticker">${fmt(t.total_score,1)}</td>
-      <td><span class="badge badge-${statusClass}">${status}</span></td>
-      <td class="ticker ${pnlClass}">${pnl?fmtUSD(pnl):'--'}</td>
-    </tr>`;
-  }).join('');
-}
-
-/* ─── Audit / Post-Mortem ─── */
-function renderAudit(data) {
-  const ds = data.daily_stats || {};
-  const plan = data.last_plan || {};
-  const timeline = $('#audit-timeline');
-
-    /* Use real post-mortems if backend sent them, else synthetic */
-  const items = data.post_mortems && data.post_mortems.length ? data.post_mortems : [];
-  
-  // Only run synthetic fallback if no real data
-  if (!items.length) {
-
-  // 1. Calibration check
-  const brier = data.brier_score || ds.brier_score || 0;
-  if(brier > 0.25) {
-    items.push({
-      type:'adjust',
-      title:'Calibration Drift Detected',
-      meta:`Brier ${fmt(brier,4)} > threshold 0.25`,
-      body:`The rolling Brier score has crossed the calibration threshold. The engine automatically tightened <code>min_total_score_single</code> and <code>min_edge_bps</code> to reduce low-confidence entries until accuracy recovers.`
-    });
-  } else {
-    items.push({
-      type:'success',
-      title:'Calibration Within Bounds',
-      meta:`Brier ${fmt(brier,4)} ≤ 0.25`,
-      body:`Forecast accuracy is healthy. No threshold penalties applied. Strategy maintains current edge requirements.`
-    });
-  }
-
-  // 2. Win rate analysis
-  const wr = data.win_rate || ds.win_rate || 0;
-  if(wr < 0.45 && ds.total_trades > 5) {
-    items.push({
-      type:'fail',
-      title:'Win Rate Below Expectation',
-      meta:`${fmtPct(wr)} over ${ds.total_trades||0} trades`,
-      body:`Win rate is under 45%. Possible causes: (1) market-price anchor was incorrect, (2) confidence model overweighted volume vs spread, (3) near-resolution bonus fired on low-liquidity markets. Review each losing trade's <code>edge_bps</code> vs actual settlement.`
-    });
-  } else if(wr >= 0.55) {
-    items.push({
-      type:'success',
-      title:'Edge Validation Positive',
-      meta:`${fmtPct(wr)} win rate`,
-      body:`Strategy is extracting edge. Consider gradually increasing <code>max_daily_trades</code> if liquidity supports deeper positions.`
-    });
-  }
-
-  // 3. Plan adjustments
-  const adjustments = plan.adjustments || [];
-  if(adjustments.length) {
-    adjustments.forEach(adj => {
-      items.push({
-        type:'adjust',
-        title:'Strategy Tuner Adjustment',
-        meta:adj.reason||'Auto-tuned',
-        body:`<code>${adj.param||'param'}</code> changed by ${adj.delta||'?'}. Rationale: ${adj.reason||'Brier-driven tuning'}.`
-      });
-    });
-  } else {
-    items.push({
-      type:'success',
-      title:'No Plan Adjustments',
-      meta:'Strategy stable',
-      body:`The daily learning engine found no statistically significant drift in category priors or feature weights. Current multipliers remain unchanged.`
-    });
-  }
-
-  // 4. Category-specific note
-  const catPerf = ds.by_category || {};
-  Object.entries(catPerf).forEach(([cat, perf]) => {
-    if(perf.win_rate < 0.4) {
-      items.push({
-        type:'fail',
-        title:`${cat.charAt(0).toUpperCase()+cat.slice(1)} Underperforming`,
-        meta:`Win rate ${fmtPct(perf.win_rate)}`,
-        body:`Category prior for <code>${cat}</code> has degraded. The tuner reduced its weight in candidate scoring. Research gap: verify if recent news flow made this category more efficient (less edge available).`
-      });
+  async function fetchJSON(url) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) {
+      console.error('fetch failed:', url, e);
+      return null;
     }
-  });
-
-  timeline.innerHTML = items.length ? items.map(it => `
-    <div class="timeline-item ${it.type}">
-      <div class="timeline-title">${escapeHtml(it.title)}</div>
-      <div class="timeline-meta">${escapeHtml(it.meta)}</div>
-      <div class="timeline-body">${it.body}</div>
-    </div>
-  `).join('') : '<div class="empty"><div class="empty-icon">🔍</div>Not enough trade history for audit.</div>';
-
-  $('#audit-date').textContent = ds.last_reset || new Date().toISOString().slice(0,10);
-}
-
-/* ─── Learning State ─── */
-function renderLearning(data) {
-  const ds = data.daily_stats || {};
-  const learning = data.learning || {};
-  const plan = data.last_plan || {};
-
-  $('#cal-window').textContent = (ds.trades_evaluated||ds.total_trades||0)+' trades';
-  $('#cal-brier').textContent = fmt(data.brier_score||ds.brier_score||0, 4);
-  $('#cal-thresh').textContent = (ds.threshold_drift||'0.00')+'σ';
-
-  $('#bar-cal').style.width = Math.min(100, ((ds.trades_evaluated||0)/50)*100)+'%';
-  $('#bar-brier2').style.width = Math.min(100, ((data.brier_score||0)/0.5)*100)+'%';
-  $('#bar-thresh').style.width = Math.min(100, Math.abs(parseFloat(ds.threshold_drift||0)*20))+'%';
-
-  // Improvement plan text
-  const adjustments = plan.adjustments || [];
-  if(adjustments.length) {
-    $('#improvement-plan').innerHTML = adjustments.map(a =>
-      `• <strong>${escapeHtml(a.param||'param')}</strong>: ${a.delta>0?'+':''}${fmt(a.delta,2)} — ${escapeHtml(a.reason||'Tuner adjustment')}`
-    ).join('<br>');
-  } else {
-    $('#improvement-plan').innerHTML = `No adjustments queued. System is running with baseline thresholds:<br>
-      <code>min_total_score_single = 50.0</code> · <code>min_edge_bps = 50</code> · <code>max_spread_pct = 0.08</code>`;
   }
-}
 
-/* ─── Category Cards ─── */
-function renderCategories(data) {
-  const ds = data.daily_stats || {};
-  const cats = ds.by_category || {
-    sports: {win_rate:0.6, pnl:120.5, trades:8},
-    politics: {win_rate:0.45, pnl:-45.2, trades:12},
-    crypto: {win_rate:0.55, pnl:78.0, trades:6},
-    economy: {win_rate:0.5, pnl:12.3, trades:4},
-  };
-  const grid = $('#category-grid');
-  const colors = {
-    sports:'#00d084', politics:'#3742fa', crypto:'#ffa502',
-    economy:'#ff4757', tech:'#00d2d3', climate:'#2ed573', other:'#8b95a8'
-  };
-
-  grid.innerHTML = Object.entries(cats).map(([cat, perf]) => {
-    const c = colors[cat] || colors.other;
-    const wr = perf.win_rate || 0;
-    const pnl = perf.pnl || 0;
-    const trades = perf.trades || 0;
-    return `
-    <div style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="font-weight:700;text-transform:capitalize;font-size:13px;">${cat}</span>
-        <span style="font-size:11px;color:var(--text-muted);">${trades} trades</span>
-      </div>
-      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">
-        <span style="font-family:var(--font-mono);font-size:22px;font-weight:700;color:${wr>=0.5?c:'var(--accent-red)'};">${fmtPct(wr)}</span>
-        <span style="font-size:11px;color:var(--text-muted);">win rate</span>
-      </div>
-      <div style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:${pnl>=0?'var(--accent-green)':'var(--accent-red)'};">
-        ${pnl>=0?'+':''}${fmtUSD(pnl)}
-      </div>
-      <div class="bar-bg" style="margin-top:8px;height:4px;">
-        <div class="bar-fill" style="width:${Math.min(100,wr*100)}%;background:${c};"></div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-/* ─── Controls ─── */
-function updateToggles() {
-  const autoBtn = $('#btn-auto');
-  const comboBtn = $('#btn-combos');
-  autoBtn.classList.toggle('active', autoExecute);
-  autoBtn.classList.toggle('danger', autoExecute);
-  autoBtn.textContent = (autoExecute ? '⏹ ' : '▶ ') + (autoExecute ? 'Live Trading' : 'Auto-Execute');
-  comboBtn.classList.toggle('active', allowCombos);
-  comboBtn.textContent = (allowCombos ? '🔗 ' : '⊘ ') + (allowCombos ? 'Combos On' : 'Combos Off');
-}
-
-async function toggleAuto() {
-  autoExecute = !autoExecute;
-  updateToggles();
-  toast(autoExecute ? 'Auto-Execute ENABLED — Live orders will fire' : 'Auto-Execute DISABLED — Dry run only', autoExecute?'error':'info');
-}
-async function toggleCombos() {
-  allowCombos = !allowCombos;
-  updateToggles();
-  toast(allowCombos ? 'Combo legs enabled (up to 4)' : 'Singles-only mode', 'info');
-}
-async function triggerCycle() {
-  toast('Triggering cycle…', 'info');
-  try {
-    const res = await fetch('/cycle', {method:'POST'});
-    const data = await res.json();
-    toast('Cycle complete: '+JSON.stringify(data).slice(0,80), data.status==='ok'?'success':'warn');
-    fetchDashboard();
-  } catch(e) {
-    toast('Cycle trigger failed: '+e.message, 'error');
+  function formatMode(dryRun) {
+    return dryRun ? { text: 'Dry', color: '#fbbf24' } : { text: 'Live', color: '#4ade80' };
   }
-}
 
-function escapeHtml(text) {
-  if(text==null) return '';
-  const div = document.createElement('div');
-  div.textContent = String(text);
-  return div.innerHTML;
-}
+  function updateSystemHealth(data) {
+    if (!data) return;
 
-/* ─── Init ─── */
-document.addEventListener('DOMContentLoaded', () => {
-  startRefresh();
-});
+    const mode = formatMode(data.dry_run);
+    if (els.mode) {
+      els.mode.textContent = mode.text;
+      els.mode.style.color = mode.color;
+    }
+
+    if (els.markets && data.markets_count !== undefined) {
+      els.markets.textContent = data.markets_count;
+    }
+
+    if (els.cycle && data.cycle_interval_seconds) {
+      els.cycle.textContent = data.cycle_interval_seconds + 's';
+    }
+
+    if (els.cache && data.cache_ttl_seconds) {
+      els.cache.textContent = data.cache_ttl_seconds + 's';
+    }
+  }
+
+  function updateTrades(trades) {
+    if (!els.table) return;
+    if (!trades || trades.length === 0) {
+      els.table.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:24px;">No trades executed yet</td></tr>';
+      return;
+    }
+    els.table.innerHTML = trades.map(t => `
+      <tr>
+        <td>${t.timestamp || '-'}</td>
+        <td>${t.ticker || t.market_title || '-'}</td>
+        <td>${t.side || '-'}</td>
+        <td>${t.size !== undefined ? (t.size.toFixed ? t.size.toFixed(4) : t.size) : '-'}</td>
+        <td>${t.price !== undefined ? (t.price.toFixed ? t.price.toFixed(4) : t.price) : '-'}</td>
+        <td><span class="badge ${t.status === 'filled' || t.status === 'executed' ? 'bg-success' : t.status === 'open' ? 'bg-warning' : 'bg-danger'}">${t.status || 'unknown'}</span></td>
+        <td>${t.pnl !== undefined ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(2) : '-'}</td>
+      </tr>
+    `).join('');
+  }
+
+  function updatePositions(positions) {
+    if (!els.positions) return;
+    if (!positions || positions.length === 0) {
+      els.positions.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:24px;">No open positions</td></tr>';
+      return;
+    }
+    els.positions.innerHTML = positions.map(p => `
+      <tr>
+        <td>${p.ticker || '-'}</td>
+        <td>${p.side || '-'}</td>
+        <td>${p.size !== undefined ? (p.size.toFixed ? p.size.toFixed(4) : p.size) : '-'}</td>
+        <td>${p.entry_price !== undefined ? p.entry_price.toFixed(4) : '-'}</td>
+        <td>${p.current_price !== undefined ? p.current_price.toFixed(4) : '-'}</td>
+        <td style="color:${(p.unrealized_pnl || 0) >= 0 ? '#4ade80' : '#f87171'}">${p.unrealized_pnl !== undefined ? (p.unrealized_pnl > 0 ? '+' : '') + p.unrealized_pnl.toFixed(2) : '-'}</td>
+      </tr>
+    `).join('');
+  }
+
+  async function refresh() {
+    const [health, dashboard, mode] = await Promise.all([
+      fetchJSON('/healthz'),
+      fetchJSON('/api/dashboard'),
+      fetchJSON('/api/mode')
+    ]);
+
+    const healthData = dashboard || health || {};
+    if (mode && healthData.dry_run === undefined && mode.dry_run !== undefined) {
+      healthData.dry_run = mode.dry_run;
+    }
+    updateSystemHealth(healthData);
+
+    if (dashboard && dashboard.trades) updateTrades(dashboard.trades);
+    if (dashboard && dashboard.positions) updatePositions(dashboard.positions);
+
+    if (els.lastUpdate) {
+      els.lastUpdate.textContent = new Date().toLocaleTimeString();
+    }
+
+    if (els.alerts && dashboard && dashboard.alerts) {
+      els.alerts.innerHTML = dashboard.alerts.map(a => `
+        <div class="alert-item" style="padding:8px 12px;margin-bottom:8px;border-radius:6px;background:${a.severity === 'error' ? 'rgba(248,113,113,0.1)' : a.severity === 'warning' ? 'rgba(251,191,36,0.1)' : 'rgba(74,222,128,0.1)'};border-left:3px solid ${a.severity === 'error' ? '#f87171' : a.severity === 'warning' ? '#fbbf24' : '#4ade80'};">
+          <div style="font-size:12px;color:#9ca3af;">${a.timestamp || ''}</div>
+          <div style="font-size:13px;">${a.message || ''}</div>
+        </div>
+      `).join('');
+    }
+  }
+
+  await refresh();
+  setInterval(refresh, 5000);
+})();
 </script>
 </body>
 </html>
