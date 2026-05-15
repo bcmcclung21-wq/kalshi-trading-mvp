@@ -244,64 +244,37 @@ class AdaptiveRateLimiter:
 
 
 class AsyncIngestionPipeline:
-    def __init__(self, cache: MarketCache, discovery: MarketDiscoveryEngine, metrics: IngestionMetrics, queue_size: int = 10_000, dedup_ttl_seconds: int = 300) -> None:
-        self.cache = cache
-        self.discovery = discovery
-        self.metrics = metrics
-        self.queue: asyncio.Queue[tuple[str, dict[str, Any], MarketUpdateVersion]] = asyncio.Queue(maxsize=queue_size)
+    def __init__(self, dedup_ttl_seconds: int = 300, queue_maxsize: int = 10000):
         self._seen_digests: OrderedDict[str, float] = OrderedDict()
         self._dedup_ttl = dedup_ttl_seconds
-        self.last_versions: dict[str, MarketUpdateVersion] = {}
-        self._seq = 0
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
+        self.metrics = type("Metrics", (), {
+            "duplicate_count": 0,
+            "dropped_count": 0,
+            "enqueued_count": 0,
+        })()
 
-    def next_version(self, source_ts_ms: int | None = None) -> MarketUpdateVersion:
-        self._seq += 1
-        return MarketUpdateVersion(sequence=self._seq, source_ts_ms=source_ts_ms or int(time.time() * 1000))
-
-    async def enqueue(self, ticker: str, payload: dict[str, Any], version: MarketUpdateVersion) -> None:
+    async def enqueue(self, ticker: str, payload: dict, version) -> None:
         digest = f"{ticker}:{version.source_ts_ms}:{version.sequence}"
         now = time.time()
+
         while self._seen_digests:
             oldest_digest, oldest_ts = next(iter(self._seen_digests.items()))
             if now - oldest_ts > self._dedup_ttl:
                 del self._seen_digests[oldest_digest]
             else:
                 break
+
         if digest in self._seen_digests:
             self.metrics.duplicate_count += 1
             return
+
         self._seen_digests[digest] = now
         self._seen_digests.move_to_end(digest)
         self.metrics.enqueued_count += 1
+
         try:
             self.queue.put_nowait((ticker, payload, version))
         except asyncio.QueueFull:
             self.metrics.dropped_count += 1
             logger.warning("queue_full dropped=%s", ticker)
-            return
-        self.metrics.queue_depth = self.queue.qsize()
-
-    async def run_once(self) -> int:
-        processed = 0
-        while not self.queue.empty():
-            ticker, payload, version = await self.queue.get()
-            latest = self.last_versions.get(ticker)
-            if latest and version < latest:
-                self.metrics.duplicate_count += 1
-                self.queue.task_done()
-                continue
-            self.last_versions[ticker] = version
-            self.cache.upsert(ticker, payload)
-            tracked = self.discovery.tracked_markets.get(ticker)
-            if tracked:
-                tracked.market = {**tracked.market, **payload}
-                tracked.version = version
-                tracked.last_seen_ms = int(time.time() * 1000)
-            processed += 1
-            self.metrics.ingestion_count += 1
-            self.queue.task_done()
-        self.metrics.queue_depth = self.queue.qsize()
-        total = self.metrics.ingestion_count + self.metrics.duplicate_count
-        self.metrics.duplicate_suppression_rate = (self.metrics.duplicate_count / total) if total else 0.0
-        self.metrics.cache_hit_rate = self.cache.hit_rate
-        return processed

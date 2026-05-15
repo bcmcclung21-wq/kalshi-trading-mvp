@@ -11,6 +11,6 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app
 
-# Single worker — engine runs exclusively on one process
-# Remove --reload, add request limits, increase header size for JWTs
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--limit-max-requests", "10000", "--timeout-keep-alive", "5", "--h11-max-incomplete-event-size", "16384"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", \
+     "--workers", "1", "--limit-max-requests", "10000", \
+     "--timeout-keep-alive", "5", "--h11-max-incomplete-event-size", "16384"]
