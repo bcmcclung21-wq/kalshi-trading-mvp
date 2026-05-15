@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from collections import OrderedDict
@@ -10,6 +11,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable
 
+
+logger = logging.getLogger(__name__)
 
 class EngineMode(str, Enum):
     BOOT = "boot"
@@ -59,6 +62,7 @@ class IngestionMetrics:
     ws_lag_ms: float = 0
     ingestion_count: int = 0
     duplicate_count: int = 0
+    dropped_count: int = 0
 
     def to_prometheus(self) -> str:
         return "\n".join(
@@ -72,6 +76,7 @@ class IngestionMetrics:
                 f"poly_websocket_lag_ms {self.ws_lag_ms:.2f}",
                 f"poly_ingested_updates_total {self.ingestion_count}",
                 f"poly_duplicate_updates_total {self.duplicate_count}",
+                f"poly_dropped_updates_total {self.dropped_count}",
             ]
         )
 
@@ -239,7 +244,7 @@ class AdaptiveRateLimiter:
 
 
 class AsyncIngestionPipeline:
-    def __init__(self, cache: MarketCache, discovery: MarketDiscoveryEngine, metrics: IngestionMetrics, queue_size: int = 20_000, dedup_ttl_seconds: int = 300) -> None:
+    def __init__(self, cache: MarketCache, discovery: MarketDiscoveryEngine, metrics: IngestionMetrics, queue_size: int = 10_000, dedup_ttl_seconds: int = 300) -> None:
         self.cache = cache
         self.discovery = discovery
         self.metrics = metrics
@@ -267,7 +272,12 @@ class AsyncIngestionPipeline:
             return
         self._seen_digests[digest] = now
         self._seen_digests.move_to_end(digest)
-        await self.queue.put((ticker, payload, version))
+        try:
+            self.queue.put_nowait((ticker, payload, version))
+        except asyncio.QueueFull:
+            self.metrics.dropped_count += 1
+            logger.warning("ingestion_queue_full dropped=%s", ticker)
+            return
         self.metrics.queue_depth = self.queue.qsize()
 
     async def run_once(self) -> int:
