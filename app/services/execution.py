@@ -9,6 +9,12 @@ from app.strategy import TUNING, bankroll_pct
 
 
 async def execute_candidate(exchange, db, candidate, bankroll_usd: float) -> OrderRecord | None:
+    edge = float((candidate.details or {}).get("edge") or 0.0)
+    fair = float((candidate.details or {}).get("fair_probability") or candidate.entry_price or 0.0)
+    fees = 0.02 * fair
+    net_edge = edge - fees
+    if net_edge <= 0:
+        return None
     notional = trade_notional(bankroll_usd=bankroll_usd, legs=candidate.legs)
     notional = min(notional, getattr(TUNING, 'max_order_notional_usd', 999999.0))
     count = max(0, math.floor(notional / candidate.entry_price)) if candidate.entry_price > 0 else 0

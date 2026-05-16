@@ -15,6 +15,7 @@ from app.research import build_research_envelope, group_ladder_markets, validate
 from app.strategy import SPORTS, TUNING
 
 logger = logging.getLogger(__name__)
+MIN_EDGE = float(os.getenv("MIN_EDGE", "0.01"))
 
 def _parse_iso(value):
     if not value:
@@ -502,6 +503,8 @@ def build_candidate(
     fair_gap = abs(float(envelope.fair_probability) - float(entry_price))
     if (entry_price <= TUNING.extreme_price_min or entry_price >= TUNING.extreme_price_max) and (float(envelope.edge) * 10000.0 < min_edge_bps):
         return None, "extreme_price_without_edge"
+    if float(envelope.edge) < MIN_EDGE:
+        return None, "edge_too_low"
     if float(envelope.edge) * 10000.0 < min_edge_bps:
         return None, "low_edge"
     sports_min_gap = 0.02 if category == "sports" and spread_cents <= 5.0 and envelope.confidence_score >= 60 else TUNING.min_fair_prob_gap
