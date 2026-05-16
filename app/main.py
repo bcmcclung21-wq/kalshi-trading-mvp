@@ -16,6 +16,7 @@ from app.cashout import CashoutManager
 from app.config import settings, WALLET_ADDRESS
 from app.db import init_db
 from app.engine import TradingEngine
+from app.models_router import load_primary_model, model_is_loaded
 from app.polymarket import PolymarketAPI
 from app.services.universe import UniverseService
 from app.routers import dashboard
@@ -87,7 +88,8 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.cashout = cashout
     app.state.settings = settings
-    app.state.model_loaded = MODEL_PATH.exists()
+    app.state.primary_model = load_primary_model()
+    app.state.model_loaded = app.state.primary_model is not None
     if app.state.model_loaded:
         logger.info("STARTUP: primary.onnx loaded successfully")
     else:
@@ -153,7 +155,7 @@ async def root_favicon():
 async def health(request: Request):
     universe = getattr(request.app.state, "universe", None)
     engine = getattr(request.app.state, "engine", None)
-    model_ok = MODEL_PATH.exists()
+    model_ok = model_is_loaded()
     mode = "dry" if os.getenv("AUTO_EXECUTE", "").strip().lower() != "true" else "live"
     return {
         "status": "ok" if model_ok else "degraded",
@@ -171,6 +173,14 @@ async def health(request: Request):
         "cycle_running": _cycle_lock.locked(),
         "trades_today": engine.daily_stats["trades_today"] if engine else 0,
     }
+
+
+@app.get("/healthz/live")
+async def health_live(request: Request):
+    model_ok = model_is_loaded()
+    if not model_ok:
+        raise HTTPException(status_code=503, detail="primary_model_unavailable")
+    return {"status": "ok", "model_loaded": True, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.post("/cycle")
 async def trigger_cycle(request: Request):
@@ -195,3 +205,17 @@ async def trade_run(request: Request):
     eng = getattr(request.app.state, "engine", None)
     if not eng: raise HTTPException(503, "engine_not_ready")
     return await eng.run_cycle()
+
+
+@app.post("/api/test-execution")
+async def test_execution(request: Request):
+    if os.getenv("AUTO_EXECUTE", "").strip().lower() != "true":
+        return {"status": "blocked", "reason": "dry mode"}
+    eng = getattr(request.app.state, "engine", None)
+    if not eng:
+        raise HTTPException(status_code=503, detail="engine_not_ready")
+    result = await eng.run_cycle()
+    trades = result.get("trades", 0) if isinstance(result, dict) else 0
+    if trades <= 0:
+        return {"status": "error", "reason": "no_trade_executed", "result": result}
+    return {"status": "ok", "result": result, "tx_hash": "simulated_via_engine_cycle"}

@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     # OPTIMAL: Lowered thresholds for more trading opportunities
     min_total_score_single: float = 35.0
     min_total_score_multi: float = 30.0
-    # TODO: Restore to 0.15 (15 bps / 150) after primary.onnx is deployed and calibrated
-    min_edge_bps: int = 5
+    # Temporary lower threshold for fallback validation; restore higher once primary model is stable.
+    min_edge_bps: float = 10.0
     max_spread_pct: float = 0.08
     max_daily_trades: int = 5
     max_risk_per_trade_usd: float = 50.0

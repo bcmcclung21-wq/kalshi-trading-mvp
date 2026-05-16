@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from threading import Lock
 from typing import Any
 
 from app.fallback_midpoint import compute
@@ -9,6 +10,8 @@ from app.fallback_midpoint import compute
 logger = logging.getLogger("app.models_router")
 
 MODEL_PATH = os.environ.get("PRIMARY_MODEL_PATH", "/app/models/primary.onnx")
+_MODEL_SINGLETON: Any = None
+_MODEL_LOCK = Lock()
 
 
 def _load_onnx_model(path: str) -> Any:
@@ -22,10 +25,21 @@ def _load_onnx_model(path: str) -> Any:
 
 
 def load_primary_model() -> Any:
-    if (not os.path.exists(MODEL_PATH)) or os.path.getsize(MODEL_PATH) < 1024:
-        logger.warning("PRIMARY_MODEL_MISSING_OR_EMPTY path=%s", MODEL_PATH)
-        return None
-    return _load_onnx_model(MODEL_PATH)
+    global _MODEL_SINGLETON
+    if _MODEL_SINGLETON is not None:
+        return _MODEL_SINGLETON
+    with _MODEL_LOCK:
+        if _MODEL_SINGLETON is not None:
+            return _MODEL_SINGLETON
+        if (not os.path.exists(MODEL_PATH)) or os.path.getsize(MODEL_PATH) < 1024:
+            logger.warning("PRIMARY_MODEL_MISSING_OR_EMPTY path=%s", MODEL_PATH)
+            return None
+        _MODEL_SINGLETON = _load_onnx_model(MODEL_PATH)
+        return _MODEL_SINGLETON
+
+
+def model_is_loaded() -> bool:
+    return load_primary_model() is not None
 
 
 def model_route(ticker: str, market_data: dict[str, Any], orderbook: dict[str, Any]) -> dict[str, Any]:
