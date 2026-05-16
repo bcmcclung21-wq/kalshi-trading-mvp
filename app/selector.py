@@ -431,6 +431,11 @@ def build_candidate(
     if not candidate_siblings and all_markets:
         ladders = group_ladder_markets(all_markets)
         candidate_siblings = ladders.get(_family_key(market), [])
+    market = dict(market)
+    market["yes_bids"] = orderbook.get("yes_bids") or orderbook.get("yes") or []
+    market["yes_asks"] = orderbook.get("yes_asks") or []
+    market["orderbook_yes_bids"] = market["yes_bids"]
+    market["orderbook_yes_asks"] = market["yes_asks"]
     envelope = build_research_envelope(
         market=market,
         entry_price=entry_price,
