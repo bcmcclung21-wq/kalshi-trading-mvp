@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 from eth_account import Account
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,11 +41,12 @@ class Settings(BaseSettings):
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
 
-    auto_execute: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() in ("1", "true", "yes", "on")
-    dry_run: bool = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
-    enable_live_trading: bool = os.getenv("ENABLE_LIVE_TRADING", "false").strip().lower() in ("1", "true", "yes", "on")
-    paper_trade_mode: bool = os.getenv("PAPER_TRADE_MODE", "true").strip().lower() in ("1", "true", "yes", "on")
+    auto_execute: bool = False
+    dry_run: bool = True
+    enable_live_trading: bool = False
+    paper_trade_mode: bool = True
     allow_combos: bool = False
+    engine_worker: bool = False
     max_orders_per_cycle: int = 5
     same_day_only: bool = True
     sports_same_day_only: bool = True
@@ -76,6 +78,22 @@ class Settings(BaseSettings):
     max_daily_trades: int = 5
     max_risk_per_trade_usd: float = 50.0
     bankroll_usd: float = 2500.0
+
+    @field_validator(
+        "dry_run",
+        "auto_execute",
+        "paper_trade_mode",
+        "cashout_enabled",
+        "engine_worker",
+        "same_day_only",
+        "allow_combos",
+        mode="before",
+    )
+    @classmethod
+    def strip_bool(cls, v):
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "on")
+        return v
 
 settings = Settings()
 
