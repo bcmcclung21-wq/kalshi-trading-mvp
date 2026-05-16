@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -309,10 +310,11 @@ class TradingEngine:
             risk = settings.bankroll_usd * rpct
             size = min(risk / max(p, 0.01), 100.0)
             tid = sel.details.get("token_id") if sel.details else None
+            sim_tid = f"sim-{uuid.uuid4().hex[:8]}"
             info = {"market_id": sel.ticker, "side": sel.side, "price": round(p, 4), "size": round(size, 4), "total_score": sel.total_score, "edge_bps": int(sel.spread_cents * 100), "predicted_prob": sel.details.get("fair_probability", p) if sel.details else p, "confidence": sel.confidence_score / 100.0, "category": sel.category, "token_id": tid, "risk_usd": round(risk, 2)}
             if dry or not auto or not live:
                 info["status"] = "simulated"
-                logger.info("SIM %s %s @%.4f sz=%.4f tid=%s", sel.ticker, sel.side, p, size, tid)
+                logger.info("SIM %s %s @%.4f sz=%.4f tid=%s", sel.ticker, sel.side, p, size, sim_tid)
             else:
                 if not tid:
                     info.update({"status": "failed", "error": "missing_token_id"})

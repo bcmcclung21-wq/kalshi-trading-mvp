@@ -91,25 +91,27 @@ class PolymarketAPI:
     async def get_positions(self, limit=100):
         data_url = f"{self.data_base}/positions"
         wallet_address = self.wallet_address or os.getenv("WALLET_ADDRESS", "")
-        if not wallet_address:
-            logger.warning("positions_fetch_skipped reason=missing_wallet limit=%s", limit)
-            return []
-        logger.info("fetching_positions source=data-api wallet=%s limit=%s", wallet_address, limit)
+        logger.info("fetching_positions source=data-api limit=%s wallet_present=%s", limit, bool(wallet_address))
 
         last_error: Exception | None = None
-        for key in ("user", "wallet"):
+        param_attempts: list[dict[str, object]] = []
+        if wallet_address:
+            param_attempts.extend([{"user": wallet_address, "limit": limit}, {"wallet": wallet_address, "limit": limit}])
+        param_attempts.append({"limit": limit})
+
+        for params in param_attempts:
             try:
-                d = await self.fetch_with_retry(data_url, params={key: wallet_address, "limit": limit})
-                logger.info("positions_fetch_ok param=%s", key)
+                d = await self.fetch_with_retry(data_url, params=params)
+                logger.info("positions_fetch_ok params=%s", ",".join(sorted(params.keys())))
                 return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
             except httpx.HTTPStatusError as exc:
                 last_error = exc
-                logger.warning("positions_fetch_param_failed param=%s status=%s", key, exc.response.status_code if exc.response else "unknown")
-                if exc.response is None or exc.response.status_code != 400:
+                logger.warning("positions_fetch_param_failed params=%s status=%s", ",".join(sorted(params.keys())), exc.response.status_code if exc.response else "unknown")
+                if exc.response is None or exc.response.status_code not in (400, 404):
                     break
             except Exception as exc:
                 last_error = exc
-                logger.warning("positions_fetch_param_failed param=%s error=%s", key, exc)
+                logger.warning("positions_fetch_param_failed params=%s error=%s", ",".join(sorted(params.keys())), exc)
                 break
 
         if last_error:

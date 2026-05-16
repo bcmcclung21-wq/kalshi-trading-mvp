@@ -69,8 +69,6 @@ def compute_side_edge(side: str, entry_price: float, bin_probability: float) -> 
 
 
 def validate_edge(edge: float, fair: float, ticker: str) -> tuple[bool, str]:
-    if edge > MAX_SANE_EDGE:
-        return False, f"Edge {edge:+.4f} exceeds max {MAX_SANE_EDGE:.2f} for {ticker}"
     if edge < MIN_SANE_EDGE:
         return False, f"Edge {edge:+.4f} below min {MIN_SANE_EDGE:.2f} for {ticker}"
     if fair > 0.99 and edge > 0.10:
@@ -189,16 +187,14 @@ def build_research_envelope(
         has_yes_pair = yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid
         spread_ok = spread_cents <= 6.0
         near_term_ok = (minutes_to_close is not None) and (float(minutes_to_close) >= 20.0)
-        if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0:
+        if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0 and False:
             midpoint = max(0.01, min(0.99, (yes_bid + yes_ask) / 2.0))
-            logger.debug("binary_quote_fallback raw ticker=%s bid=%.4f ask=%.4f midpoint=%.4f", market.get("ticker"), yes_bid, yes_ask, midpoint)
             fair_probability, edge = compute_side_edge(side, entry_price, midpoint)
             edge_yes = midpoint - yes_ask
             edge_no = midpoint - (1.0 - yes_bid)
-            logger.debug("binary_quote_fallback edges ticker=%s side=%s edge=%.4f edge_yes=%.4f edge_no=%.4f", market.get("ticker"), side, edge, edge_yes, edge_no)
             ladder_consistency = 0.5
             projection_supported = True
-            projection_model = "binary_quote_fallback"
+            projection_model = "binary_quote_fallback_disabled"
             tags.append("fallback_binary_quote")
 
     if not projection_supported:
@@ -223,7 +219,11 @@ def build_research_envelope(
             market_midpoint = 1.0 - ((no_bid + no_ask) / 2.0)
         if market_midpoint > 0:
             fair_probability = max(0.01, min(0.99, market_midpoint))
-            edge = abs(fair_probability - entry_price)
+            raw_edge = (fair_probability - entry_price) if side == "YES" else (entry_price - fair_probability)
+            if abs(fair_probability - entry_price) > 0.40:
+                edge = 0.005
+            else:
+                edge = max(0.0, raw_edge)
             ladder_consistency = max(0.1, min(1.0, liq_q / 100.0))
             projection_supported = True
             projection_model = "fallback_midpoint"
