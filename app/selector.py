@@ -78,18 +78,10 @@ def _best_effort_minutes(market: dict[str, Any], close_dt: datetime | None, now:
     except (TypeError, ValueError):
         return None
 
-def has_valid_orderbook(orderbook: dict[str, Any]) -> bool:
-    if not orderbook:
-        return False
-    yes_bids = orderbook.get("yes_bids") or orderbook.get("yes") or []
-    yes_asks = orderbook.get("yes_asks") or []
-    no_bids = orderbook.get("no_bids") or orderbook.get("no") or []
-    no_asks = orderbook.get("no_asks") or []
-    if not yes_bids and not yes_asks:
-        return False
-    if not no_bids and not no_asks:
-        return False
-    return True
+def has_valid_orderbook(orderbook):
+    """FIX4: Relaxed — any side with liquidity is valid."""
+    if not orderbook: return False
+    return bool(orderbook.get("yes_bids") or orderbook.get("yes") or orderbook.get("yes_asks") or orderbook.get("no_bids") or orderbook.get("no") or orderbook.get("no_asks"))
 
 def has_market_liquidity(market: dict[str, Any]) -> bool:
     return True

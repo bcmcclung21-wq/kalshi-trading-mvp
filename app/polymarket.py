@@ -144,15 +144,9 @@ class PolymarketAPI:
         r.raise_for_status()
         return r.json()
 
-    async def sell_position(self, token_id: str, outcome: str, size: float):
-        payload = {
-            "token_id": token_id,
-            "side": "SELL",
-            "size": float(size),
-            "price": 0.01,
-            "type": "limit",
-        }
-        r = await self._auth_client.post(f"{self.clob_base}/order", json=payload)
+    async def sell_position(self, token_id, outcome, size):
+        """FIX6: cashout passes token_id first — was ticker causing crash."""
+        r = await self._auth_client.post(f"{self.clob_base}/order", json={"token_id": token_id, "side": "SELL", "size": float(size), "price": 0.01, "type": "limit"})
         r.raise_for_status()
         return r.json()
 

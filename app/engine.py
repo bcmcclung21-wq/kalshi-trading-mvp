@@ -298,65 +298,33 @@ class TradingEngine:
         return candidates[:min(max_daily, max_positions)]
 
     async def _execute_trades(self, selected, thresholds):
+        """FIX5: 3-gate safety + token propagation."""
         executed = []
-        auto_execute = settings.auto_execute
-        dry_run = settings.dry_run
-
-        # STRICT bankroll percentage sizing — NO OVERRIDE ALLOWED
+        auto = getattr(settings, 'auto_execute', False)
+        dry = getattr(settings, 'dry_run', True)
+        live = getattr(settings, 'enable_live_trading', False)
         for sel in selected:
-            price = sel.entry_price
-            legs = sel.legs
-
-            if legs == 1:
-                risk_pct = 0.02
-            elif legs == 2:
-                risk_pct = 0.01
-            elif legs == 3:
-                risk_pct = 0.0075
+            p = sel.entry_price
+            rpct = {1: 0.02, 2: 0.01, 3: 0.0075}.get(sel.legs, 0.005)
+            risk = settings.bankroll_usd * rpct
+            size = min(risk / max(p, 0.01), 100.0)
+            tid = sel.details.get("token_id") if sel.details else None
+            info = {"market_id": sel.ticker, "side": sel.side, "price": round(p, 4), "size": round(size, 4), "total_score": sel.total_score, "edge_bps": int(sel.spread_cents * 100), "predicted_prob": sel.details.get("fair_probability", p) if sel.details else p, "confidence": sel.confidence_score / 100.0, "category": sel.category, "token_id": tid, "risk_usd": round(risk, 2)}
+            if dry or not auto or not live:
+                info["status"] = "simulated"
+                logger.info("SIM %s %s @%.4f sz=%.4f tid=%s", sel.ticker, sel.side, p, size, tid)
             else:
-                risk_pct = 0.005
-
-            bankroll = settings.bankroll_usd
-            max_risk = bankroll * risk_pct
-            size = max_risk / max(price, 0.01)
-            size = min(size, 100.0)
-            token_id = sel.details.get("token_id") if sel.details else None
-
-            info = {
-                "market_id": sel.ticker,
-                "market_title": sel.ticker,
-                "side": sel.side,
-                "price": round(price, 4),
-                "size": round(size, 4),
-                "total_score": sel.total_score,
-                "edge_bps": int(sel.spread_cents * 100),
-                "predicted_prob": sel.details.get("fair_probability", price) if sel.details else price,
-                "confidence": sel.confidence_score / 100.0,
-                "category": sel.category,
-                "token_id": token_id,
-                "risk_usd": round(max_risk, 2),
-                "risk_pct": risk_pct,
-            }
-
-            if not dry_run and auto_execute and token_id:
-                logger.info("executing_live_order ticker=%s token_id=%s side=%s size=%.4f", sel.ticker, token_id, sel.side, size)
-                try:
-                    result = await self.api.place_order(token_id, sel.side, size, price)
-                    info.update({"status": "executed", "order_id": result.get("id", "")})
-                    self.daily_stats["trades_today"] += 1
-                except Exception as e:
-                    info.update({"status": "failed", "error": str(e)})
-            else:
-                logger.info(
-                    "dry_run_order_skipped ticker=%s dry_run=%s auto_execute=%s has_token=%s",
-                    sel.ticker,
-                    dry_run,
-                    auto_execute,
-                    bool(token_id),
-                )
-                if not dry_run and auto_execute and not token_id:
+                if not tid:
                     info.update({"status": "failed", "error": "missing_token_id"})
+                    logger.error("NO_TID %s", sel.ticker)
                 else:
-                    info["status"] = "dry_run"
+                    logger.info("LIVE %s tid=%s %s sz=%.4f", sel.ticker, tid, sel.side, size)
+                    try:
+                        r = await self.api.place_order(tid, sel.side, size, p)
+                        info.update({"status": "executed", "order_id": r.get("id", "")})
+                        self.daily_stats["trades_today"] += 1
+                    except Exception as e:
+                        info.update({"status": "failed", "error": str(e)})
+                        logger.exception("EXEC_FAIL %s", sel.ticker)
             executed.append(info)
         return executed
