@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from app.fallback_midpoint import compute
 
 logger = logging.getLogger("app.models_router")
 
+MODEL_PATH = os.environ.get("PRIMARY_MODEL_PATH", "models/primary.onnx")
+
+
+def _load_onnx_model(path: str) -> Any:
+    try:
+        import onnxruntime as ort
+
+        return ort.InferenceSession(path)
+    except Exception as exc:
+        logger.error("PRIMARY_MODEL_LOAD_FAILED path=%s err=%s", path, exc)
+        return None
+
 
 def load_primary_model() -> Any:
-    """Placeholder primary model loader; returns None until integrated."""
-    return None
+    if not os.path.exists(MODEL_PATH):
+        logger.error("MODEL_FILE_MISSING path=%s cwd=%s", MODEL_PATH, os.getcwd())
+        return None
+    return _load_onnx_model(MODEL_PATH)
 
 
 def model_route(ticker: str, market_data: dict[str, Any], orderbook: dict[str, Any]) -> dict[str, Any]:
