@@ -15,7 +15,7 @@ from app.research import build_research_envelope, group_ladder_markets, validate
 from app.strategy import SPORTS, TUNING
 
 logger = logging.getLogger(__name__)
-MIN_EDGE = float(os.getenv("MIN_EDGE", "0.01"))
+MIN_EDGE = float(os.getenv("MIN_EDGE_BPS", "0.50")) / 100.0
 
 def _parse_iso(value):
     if not value:

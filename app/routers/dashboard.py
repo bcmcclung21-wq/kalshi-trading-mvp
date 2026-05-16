@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy import text
 
 from app.db import session_scope
 from app.models import OrderRecord
@@ -15,8 +16,28 @@ router = APIRouter()
 def _recent_trades(limit: int = 25) -> list[dict]:
     try:
         with session_scope() as session:
-            stmt = select(OrderRecord).order_by(OrderRecord.created_at.desc()).limit(limit)
-            rows = session.execute(stmt).scalars().all()
+            rows = []
+            try:
+                stmt = select(OrderRecord).order_by(OrderRecord.created_at.desc()).limit(limit)
+                rows = session.execute(stmt).scalars().all()
+            except Exception:
+                rows = []
+            if not rows:
+                legacy = session.execute(text("SELECT * FROM trades ORDER BY timestamp DESC LIMIT :limit"), {"limit": limit}).mappings().all()
+                return [
+                    {
+                        "id": r.get("id"),
+                        "market_id": r.get("market_id") or r.get("ticker"),
+                        "side": r.get("side"),
+                        "price": float(r.get("price") or 0.0),
+                        "size": r.get("size") or r.get("count") or 0,
+                        "status": r.get("status") or "simulated",
+                        "timestamp": (r.get("timestamp") or r.get("created_at")),
+                        "category": r.get("category") or "unknown",
+                        "dry_run": bool(r.get("dry_run", True)),
+                    }
+                    for r in legacy
+                ]
             return [
                 {
                     "id": r.id,
