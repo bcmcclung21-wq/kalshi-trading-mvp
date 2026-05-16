@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # OPTIMAL: Lowered thresholds for more trading opportunities
     min_total_score_single: float = 35.0
     min_total_score_multi: float = 30.0
-    min_edge_bps: int = 15
+    min_edge_bps: int = 50
     max_spread_pct: float = 0.08
     max_daily_trades: int = 5
     max_risk_per_trade_usd: float = 50.0
