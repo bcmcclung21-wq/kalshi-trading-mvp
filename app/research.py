@@ -7,6 +7,7 @@ import logging
 
 from app.classifier import detect_category
 from app.learning import bucket_features, get_learning_engine
+from app.models_router import model_route
 from app.projection_registry import project as project_market
 import os
 
@@ -238,33 +239,17 @@ def build_research_envelope(
             tags.append("temperature_registry")
 
     if not projection_supported:
-        yes_bid = float(market.get("yes_bid") or 0.0)
-        yes_ask = float(market.get("yes_ask") or 0.0)
-        no_bid = float(market.get("no_bid") or 0.0)
-        no_ask = float(market.get("no_ask") or 0.0)
-        market_midpoint = 0.0
-        if yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid:
-            market_midpoint = (yes_bid + yes_ask) / 2.0
-        elif no_bid > 0 and no_ask > 0 and no_ask >= no_bid:
-            market_midpoint = 1.0 - ((no_bid + no_ask) / 2.0)
-        if market_midpoint > 0:
-            fair_probability = max(0.01, min(0.99, market_midpoint))
-            raw_edge = (fair_probability - entry_price) if side == "YES" else (entry_price - fair_probability)
-            if abs(fair_probability - entry_price) > 0.40:
-                edge = 0.005
-            else:
-                edge = max(0.0, raw_edge)
+        orderbook = {
+            "bids": [[float(market.get("yes_bid") or 0.0), 0.0]],
+            "asks": [[float(market.get("yes_ask") or 1.0), 0.0]],
+        }
+        route = model_route(str(market.get("ticker") or ""), market, orderbook)
+        if route.get("primary_edge") is not None:
+            fair_probability = max(0.01, min(0.99, float(market.get("yes_bid") or 0.0) + 0.5 * float(market.get("yes_ask") or 0.0)))
+            edge = float(route.get("primary_edge") or 0.0)
             ladder_consistency = max(0.1, min(1.0, liq_q / 100.0))
             projection_supported = True
-            projection_model = "fallback_midpoint"
-            logger.debug("market_mid=%s, fair=%s, edge=%s", round(market_midpoint, 4), round(fair_probability, 4), round(edge, 4))
-            logger.info(
-                "model_route ticker=%s primary_ok=%s primary_edge=%s fallback=%s",
-                market.get("ticker"),
-                False,
-                "None",
-                True,
-            )
+            projection_model = "fallback_midpoint" if route.get("fallback") else "primary"
 
     if not projection_supported:
         return ResearchEnvelope(
