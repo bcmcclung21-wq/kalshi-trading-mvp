@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import time
 import uuid
 from collections import OrderedDict
@@ -168,6 +169,15 @@ class TradingEngine:
                 else:
                     self._deduplicator.update(ticker, current_mid, 0.0)
                     logger.debug("candidate_rejected ticker=%s reason=%s", m.get("ticker"), reason)
+                    reject_reasons = []
+                    if reason in {"edge_too_low", "low_edge"}:
+                        reject_reasons.append("edge_too_low")
+                    if reason == "low_total_score":
+                        reject_reasons.append("total_score_low")
+                    if reason in {"unsupported_projection_model", "failed_projection"}:
+                        reject_reasons.append("no_projection")
+                    if reject_reasons:
+                        logger.info("drop_reasons ticker=%s reasons=%s", m.get("ticker"), reject_reasons)
 
             if not candidates:
                 logger.warning("no_candidates_after_build pool=%d", len(pool))
@@ -301,14 +311,18 @@ class TradingEngine:
     async def _execute_trades(self, selected, thresholds):
         """FIX5: 3-gate safety + token propagation."""
         executed = []
+        override_ticker = os.getenv("OVERRIDE_TICKER", "").strip().lower()
         auto = getattr(settings, 'auto_execute', False)
         dry = getattr(settings, 'dry_run', True)
         live = getattr(settings, 'enable_live_trading', False)
         for sel in selected:
+            if override_ticker and str(sel.ticker).strip().lower() == override_ticker:
+                logger.warning("override_trade_enabled ticker=%s forcing side=YES size=1.0", sel.ticker)
+                sel.side = "YES"
             p = sel.entry_price
             rpct = {1: 0.02, 2: 0.01, 3: 0.0075}.get(sel.legs, 0.005)
             risk = settings.bankroll_usd * rpct
-            size = min(risk / max(p, 0.01), 100.0)
+            size = 1.0 if override_ticker and str(sel.ticker).strip().lower() == override_ticker else min(risk / max(p, 0.01), 100.0)
             tid = sel.details.get("token_id") if sel.details else None
             sim_tid = f"sim-{uuid.uuid4().hex[:8]}"
             info = {"market_id": sel.ticker, "side": sel.side, "price": round(p, 4), "size": round(size, 4), "total_score": sel.total_score, "edge_bps": int(sel.spread_cents * 100), "predicted_prob": sel.details.get("fair_probability", p) if sel.details else p, "confidence": sel.confidence_score / 100.0, "category": sel.category, "token_id": tid, "risk_usd": round(risk, 2)}

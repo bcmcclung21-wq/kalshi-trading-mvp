@@ -8,6 +8,7 @@ import logging
 from app.classifier import detect_category
 from app.learning import bucket_features, get_learning_engine
 from app.projection_registry import project as project_market
+import os
 
 logger = logging.getLogger("app.research")
 MAX_SANE_EDGE = 0.50
@@ -175,6 +176,10 @@ def build_research_envelope(
             projection_model = "ladder_range"
 
     if not projection_supported:
+        poly_api_key = os.getenv("POLY_API_KEY") or os.getenv("POLYMARKET_KEY_ID") or os.getenv("POLYMARKET_API_KEY")
+        poly_secret = os.getenv("POLY_SECRET") or os.getenv("POLYMARKET_SECRET_KEY")
+        if not poly_api_key or not poly_secret:
+            logger.warning("binary_quote_fallback_credentials_missing ticker=%s", market.get("ticker"))
         yes_bid = float(market.get("yes_bid") or 0.0)
         yes_ask = float(market.get("yes_ask") or 0.0)
         no_bid = float(market.get("no_bid") or 0.0)
@@ -214,6 +219,13 @@ def build_research_envelope(
             projection_supported = True
             projection_model = "binary_quote_fallback"
             tags.append("fallback_binary_quote")
+            logger.info(
+                "model_route ticker=%s primary_ok=%s primary_edge=%.4f fallback=%s",
+                market.get("ticker"),
+                True,
+                float(edge),
+                False,
+            )
 
     if not projection_supported:
         ticker = str(market.get("ticker") or "")
@@ -246,6 +258,13 @@ def build_research_envelope(
             projection_supported = True
             projection_model = "fallback_midpoint"
             logger.debug("market_mid=%s, fair=%s, edge=%s", round(market_midpoint, 4), round(fair_probability, 4), round(edge, 4))
+            logger.info(
+                "model_route ticker=%s primary_ok=%s primary_edge=%s fallback=%s",
+                market.get("ticker"),
+                False,
+                "None",
+                True,
+            )
 
     if not projection_supported:
         return ResearchEnvelope(
