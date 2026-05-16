@@ -2,10 +2,38 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
+from sqlalchemy import select
+
+from app.db import session_scope
+from app.models import OrderRecord
 
 logger = logging.getLogger("app.dashboard")
 
 router = APIRouter()
+
+
+def _recent_trades(limit: int = 25) -> list[dict]:
+    try:
+        with session_scope() as session:
+            stmt = select(OrderRecord).order_by(OrderRecord.created_at.desc()).limit(limit)
+            rows = session.execute(stmt).scalars().all()
+            return [
+                {
+                    "id": r.id,
+                    "market_id": r.ticker,
+                    "side": r.side,
+                    "price": round((r.price_cents or 0) / 100.0, 4),
+                    "size": r.count,
+                    "status": r.status,
+                    "timestamp": r.created_at.isoformat() if r.created_at else None,
+                    "category": r.category,
+                    "dry_run": r.dry_run,
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        logger.warning("dashboard_recent_trades_failed err=%s", exc)
+        return []
 
 @router.get("/dashboard")
 @router.get("/api/dashboard")
@@ -35,9 +63,7 @@ async def dashboard(request: Request):
             })
     logger.info("dashboard_markets_prepared count=%d", len(markets))
 
-    trades = []
-    if engine and hasattr(engine, "daily_stats"):
-        trades = engine.daily_stats.get("last_trades", [])
+    trades = _recent_trades(limit=25)
 
     category_counts = {}
     for m in markets:

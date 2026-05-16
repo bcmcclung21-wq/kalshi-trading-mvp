@@ -22,6 +22,7 @@ from app.routers import dashboard
 
 logger = logging.getLogger("app.main")
 _cycle_lock = asyncio.Lock()
+MODEL_PATH = Path("/app/models/primary.onnx")
 
 # Worker role detection — CRITICAL: prevents duplicate work across uvicorn workers
 ENGINE_WORKER = os.environ.get("ENGINE_WORKER", "false").lower() == "true"
@@ -86,6 +87,11 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.cashout = cashout
     app.state.settings = settings
+    app.state.model_loaded = MODEL_PATH.exists()
+    if app.state.model_loaded:
+        logger.info("STARTUP: primary.onnx loaded successfully")
+    else:
+        logger.warning("STARTUP: primary.onnx missing — falling back to midpoint")
 
     if ENGINE_WORKER:
         app.state.engine_task = asyncio.create_task(
@@ -147,9 +153,13 @@ async def root_favicon():
 async def health(request: Request):
     universe = getattr(request.app.state, "universe", None)
     engine = getattr(request.app.state, "engine", None)
+    model_ok = MODEL_PATH.exists()
+    mode = "dry" if os.getenv("AUTO_EXECUTE", "").strip().lower() != "true" else "live"
     return {
-        "status": "ok",
+        "status": "ok" if model_ok else "degraded",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_loaded": model_ok,
+        "mode": mode,
         "markets_cached": len(universe._markets) if universe else 0,
         "active_count": len(universe._markets) if universe else 0,
         "last_refresh": universe.last_refresh.isoformat() if universe and getattr(universe, "last_refresh", None) else None,
