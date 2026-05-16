@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import os
 import time
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
+from app.db import session_scope
+from app.models import OrderRecord
 from app.selector import build_candidate, rank_candidates, single_pool
 from app.strategy import TUNER, get_adjusted_thresholds
 from app.learning import get_learning_engine
@@ -73,6 +76,28 @@ class TradingEngine:
         }
         self._learning_lock = asyncio.Lock()
         self._deduplicator = MarketDeduplicator()
+
+    def _record_trade(self, trade: dict, dry_run: bool) -> None:
+        try:
+            with session_scope() as session:
+                session.add(OrderRecord(
+                    ticker=trade.get("market_id", ""),
+                    category=trade.get("category", "unknown"),
+                    side=trade.get("side", ""),
+                    market_type="single",
+                    legs=1,
+                    count=max(int(round(float(trade.get("size", 0.0)))), 0),
+                    price_cents=max(int(round(float(trade.get("price", 0.0)) * 100)), 0),
+                    bankroll_pct=0.0,
+                    status=trade.get("status", "simulated"),
+                    kalshi_order_id=trade.get("order_id", ""),
+                    dry_run=dry_run,
+                    rationale=f"edge_bps={trade.get('edge_bps', 0)} total_score={trade.get('total_score', 0)}",
+                    raw_json=json.dumps(trade),
+                    estimated_win_probability=float(trade.get("predicted_prob", 0.0)),
+                ))
+        except Exception as exc:
+            logger.exception("trade_persist_failed ticker=%s err=%s", trade.get("market_id", ""), exc)
 
     async def run_cycle(self):
         try:
@@ -342,5 +367,6 @@ class TradingEngine:
                     except Exception as e:
                         info.update({"status": "failed", "error": str(e)})
                         logger.exception("EXEC_FAIL %s", sel.ticker)
+            self._record_trade(info, dry_run=(dry or not auto or not live))
             executed.append(info)
         return executed
