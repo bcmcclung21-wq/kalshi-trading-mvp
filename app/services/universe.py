@@ -32,6 +32,10 @@ class UniverseService:
         self._client = None
         self._zero_parsed_streak = 0
 
+    def get_orderbook(self, key: str):
+        """FIX1: engine calls this — was MISSING causing 100% crash."""
+        return self._orderbooks.get(key) if key else None
+
     async def initialize(self):
         self._client = await get_client()
 
@@ -66,6 +70,7 @@ class UniverseService:
 
             self._update_pipeline_health(len(raw), len(self._markets))
             await self._fetch_orderbooks_concurrent()
+            self._merge_orderbooks_into_markets()
 
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._latency_samples_ms.append(latency_ms)
@@ -224,6 +229,17 @@ class UniverseService:
             stats["failures"],
         )
 
+    def _merge_orderbooks_into_markets(self):
+        """FIX8: Attach bid/ask to Market objects so engine sees real prices."""
+        for m in self._markets:
+            ob = self._orderbooks.get(m.id) or self._orderbooks.get(getattr(m, "slug", "") or "")
+            if not ob: continue
+            yb, ya = ob.get("yes_bids", []), ob.get("yes_asks", [])
+            if yb: m.best_bid = max(float(b.get("price", 0)) for b in yb)
+            if ya: m.best_ask = min(float(a.get("price", 1)) for a in ya)
+            if not getattr(m, "yes_token_id", None): m.yes_token_id = ob.get("token_id")
+            if not getattr(m, "token_id", None): m.token_id = ob.get("token_id")
+
     @property
     def processing_latency_p99_ms(self) -> int:
         if not self._latency_samples_ms:
@@ -272,8 +288,14 @@ class UniverseService:
         if 'active' not in t:
             t['active'] = True
 
+        t['yes_token_id'] = self._extract_yes_token_id(raw)
+        t['token_id'] = t['yes_token_id']
+
         return t
 
+
+    def _extract_yes_token_id(self, raw: dict):
+        return self._get_yes_token_id(raw)
 
     def _infer_category_from_tags(self, tags: Any, text: str = "") -> str:
         values: list[str] = []
@@ -303,23 +325,51 @@ class UniverseService:
             return False
         return True
 
-    def _get_yes_token_id(self, market: Any) -> Optional[str]:
-        if market is None:
+    def _get_yes_token_id(self, market):
+        """FIX2: 5-fallback Gamma API v2 token extraction."""
+        if market is None: return None
+        raw = getattr(market, 'raw', None) or (market if isinstance(market, dict) else {})
+        # 1. Direct field
+        direct = getattr(market, 'yes_token_id', None) or getattr(market, 'token_id', None)
+        if direct: return direct
+        # 2. outcomes + clobTokenIds parallel arrays (Gamma v2)
+        oc, ct = raw.get('outcomes'), raw.get('clobTokenIds')
+        if isinstance(oc, list) and isinstance(ct, list) and len(oc) == len(ct):
+            for o, tid in zip(oc, ct):
+                if str(o).lower() in ('yes', 'yes token'): return tid
+        # 3. outcomes as dicts
+        if isinstance(oc, list):
+            for o in oc:
+                if isinstance(o, dict) and str(o.get('name', '')).lower() in ('yes', 'yes token'):
+                    return o.get('clobTokenId') or o.get('tokenId') or o.get('token_id')
+                elif isinstance(o, str) and str(o).lower() == 'yes':
+                    try: idx = oc.index(o); return ct[idx] if isinstance(ct, list) and idx < len(ct) else None
+                    except: pass
+        # 4. Legacy tokens array
+        tk = raw.get('tokens')
+        if isinstance(tk, list):
+            for t in tk:
+                if isinstance(t, dict) and str(t.get('outcome', '')).lower() in ('yes', 'yes token'):
+                    return t.get('token_id') or t.get('id') or t.get('clobTokenId')
+        # 5. First clobTokenId (usually Yes)
+        if isinstance(ct, list) and ct: return ct[0]
+        return None
+
+    def _convert_clob_orderbook(self, data, token_id, market):
+        """FIX3: Normalize CLOB JSON → selector format."""
+        bids = data.get("bids", []) or data.get("Buy", []) or []
+        asks = data.get("asks", []) or data.get("Sell", []) or []
+        def _norm(lvl):
+            if isinstance(lvl, dict):
+                p = lvl.get("price")
+                if p is not None: return {"price": float(p), "qty": float(lvl.get("size") or lvl.get("amount") or lvl.get("qty") or 0)}
+            elif isinstance(lvl, (list, tuple)) and len(lvl) >= 2: return {"price": float(lvl[0]), "qty": float(lvl[1])}
             return None
-
-        tokens = getattr(market, 'tokens', None) or (market.raw.get('tokens') if getattr(market, 'raw', None) else None)
-        if tokens:
-            for token in tokens:
-                outcome = (getattr(token, 'outcome', None) or (token.get('outcome') if isinstance(token, dict) else '') or '')
-                if str(outcome).lower() in ('yes', 'yes token'):
-                    return getattr(token, 'token_id', None) or getattr(token, 'id', None) or (token.get('token_id') if isinstance(token, dict) else None) or (token.get('id') if isinstance(token, dict) else None)
-
-        return (
-            getattr(market, 'yes_token_id', None)
-            or getattr(market, 'token_id', None)
-            or (market.raw.get('token_id') if getattr(market, 'raw', None) else None)
-            or (market.raw.get('clobTokenIds', [None])[0] if isinstance(market.raw.get('clobTokenIds') if getattr(market, 'raw', None) else None, list) else None)
-        )
-
-    def _convert_clob_orderbook(self, data: dict, token_id: str, market: Any) -> Any:
-        return data
+        yb = [n for b in bids if (n := _norm(b))]
+        ya = [n for a in asks if (n := _norm(a))]
+        return {
+            "yes_bids": yb, "yes_asks": ya,
+            "no_bids": [{"price": round(1.0 - a["price"], 4), "qty": a["qty"]} for a in ya],
+            "no_asks": [{"price": round(1.0 - b["price"], 4), "qty": b["qty"]} for b in yb],
+            "token_id": token_id,
+        }

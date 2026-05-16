@@ -177,3 +177,11 @@ async def trigger_cashout(request: Request):
         return {"status": "error", "detail": "cashout_not_ready"}
     actions = await cashout.evaluate_all()
     return {"status": "ok", "actions": actions}
+
+
+@app.post("/api/trade/run")
+async def trade_run(request: Request):
+    """FIX9: Manual on-demand cycle trigger."""
+    eng = getattr(request.app.state, "engine", None)
+    if not eng: raise HTTPException(503, "engine_not_ready")
+    return await eng.run_cycle()
