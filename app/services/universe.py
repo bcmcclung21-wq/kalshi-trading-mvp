@@ -231,15 +231,35 @@ class UniverseService:
         )
 
     def _merge_orderbooks_into_markets(self):
-        """FIX8: Attach bid/ask to Market objects so engine sees real prices."""
-        for m in self._markets:
-            ob = self._orderbooks.get(m.id) or self._orderbooks.get(getattr(m, "slug", "") or "")
-            if not ob: continue
+        """Merge orderbook data into market objects."""
+        if not self._orderbooks:
+            return
+
+        updated_markets: list[Market] = []
+        for market in self._markets:
+            ob = self._orderbooks.get(market.id) or self._orderbooks.get(getattr(market, "slug", "") or "")
+            if not ob:
+                updated_markets.append(market)
+                continue
+
             yb, ya = ob.get("yes_bids", []), ob.get("yes_asks", [])
-            if yb: m.best_bid = max(float(b.get("price", 0)) for b in yb)
-            if ya: m.best_ask = min(float(a.get("price", 1)) for a in ya)
-            if not getattr(m, "yes_token_id", None): m.yes_token_id = ob.get("token_id")
-            if not getattr(m, "token_id", None): m.token_id = ob.get("token_id")
+            updates: dict[str, Any] = {}
+            if yb:
+                updates["best_bid"] = max(float(b.get("price", 0)) for b in yb)
+            if ya:
+                updates["best_ask"] = min(float(a.get("price", 1)) for a in ya)
+
+            token_id = ob.get("token_id")
+            if token_id and not getattr(market, "yes_token_id", None):
+                updates["yes_token_id"] = str(token_id)
+            if token_id and not getattr(market, "token_id", None):
+                updates["token_id"] = str(token_id)
+
+            if updates:
+                market = market.model_copy(update=updates)
+            updated_markets.append(market)
+
+        self._markets = updated_markets
 
     @property
     def processing_latency_p99_ms(self) -> int:
@@ -289,14 +309,58 @@ class UniverseService:
         if 'active' not in t:
             t['active'] = True
 
-        t['yes_token_id'] = self._extract_yes_token_id(raw)
-        t['token_id'] = t['yes_token_id']
+        yes_token_id, no_token_id = self._extract_token_ids(raw)
+        t['yes_token_id'] = yes_token_id
+        t['no_token_id'] = no_token_id
+        t['token_id'] = yes_token_id
 
         return t
 
 
     def _extract_yes_token_id(self, raw: dict):
-        return self._get_yes_token_id(raw)
+        yes_token_id, _ = self._extract_token_ids(raw)
+        return yes_token_id
+
+    def _extract_token_ids(self, raw: dict) -> tuple[str | None, str | None]:
+        outcomes = raw.get("outcomes")
+        token_ids = raw.get("clobTokenIds")
+
+        if isinstance(outcomes, str):
+            try:
+                outcomes = json.loads(outcomes)
+            except Exception:
+                outcomes = []
+        if not isinstance(outcomes, list):
+            outcomes = []
+
+        if isinstance(token_ids, str):
+            try:
+                token_ids = json.loads(token_ids)
+            except Exception:
+                token_ids = []
+        if not isinstance(token_ids, list):
+            token_ids = []
+
+        yes_token_id: str | None = None
+        no_token_id: str | None = None
+        if outcomes and token_ids and len(outcomes) == len(token_ids):
+            for outcome, token_id in zip(outcomes, token_ids):
+                outcome_name = ""
+                if isinstance(outcome, dict):
+                    outcome_name = str(outcome.get("name") or outcome.get("outcome") or "")
+                else:
+                    outcome_name = str(outcome)
+                if outcome_name.lower() == "yes":
+                    yes_token_id = str(token_id)
+                elif outcome_name.lower() == "no":
+                    no_token_id = str(token_id)
+
+        if yes_token_id is None and len(token_ids) > 0:
+            yes_token_id = str(token_ids[0])
+        if no_token_id is None and len(token_ids) > 1:
+            no_token_id = str(token_ids[1])
+
+        return yes_token_id, no_token_id
 
     def _infer_category_from_tags(self, tags: Any, text: str = "") -> str:
         values: list[str] = []
