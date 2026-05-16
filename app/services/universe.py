@@ -10,6 +10,7 @@ DEFENSIVE FIXES v3:
 """
 import asyncio
 import heapq
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict, Any
@@ -329,11 +330,24 @@ class UniverseService:
         """FIX2: 5-fallback Gamma API v2 token extraction."""
         if market is None: return None
         raw = getattr(market, 'raw', None) or (market if isinstance(market, dict) else {})
+
+        def _as_list(value):
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+            return None
+
         # 1. Direct field
         direct = getattr(market, 'yes_token_id', None) or getattr(market, 'token_id', None)
         if direct: return direct
         # 2. outcomes + clobTokenIds parallel arrays (Gamma v2)
-        oc, ct = raw.get('outcomes'), raw.get('clobTokenIds')
+        oc, ct = _as_list(raw.get('outcomes')), _as_list(raw.get('clobTokenIds'))
         if isinstance(oc, list) and isinstance(ct, list) and len(oc) == len(ct):
             for o, tid in zip(oc, ct):
                 if str(o).lower() in ('yes', 'yes token'): return tid
@@ -346,7 +360,7 @@ class UniverseService:
                     try: idx = oc.index(o); return ct[idx] if isinstance(ct, list) and idx < len(ct) else None
                     except: pass
         # 4. Legacy tokens array
-        tk = raw.get('tokens')
+        tk = _as_list(raw.get('tokens'))
         if isinstance(tk, list):
             for t in tk:
                 if isinstance(t, dict) and str(t.get('outcome', '')).lower() in ('yes', 'yes token'):
