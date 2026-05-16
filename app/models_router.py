@@ -8,7 +8,7 @@ from app.fallback_midpoint import compute
 
 logger = logging.getLogger("app.models_router")
 
-MODEL_PATH = os.environ.get("PRIMARY_MODEL_PATH", "models/primary.onnx")
+MODEL_PATH = os.environ.get("PRIMARY_MODEL_PATH", "/app/models/primary.onnx")
 
 
 def _load_onnx_model(path: str) -> Any:
@@ -22,8 +22,8 @@ def _load_onnx_model(path: str) -> Any:
 
 
 def load_primary_model() -> Any:
-    if not os.path.exists(MODEL_PATH):
-        logger.error("MODEL_FILE_MISSING path=%s cwd=%s", MODEL_PATH, os.getcwd())
+    if (not os.path.exists(MODEL_PATH)) or os.path.getsize(MODEL_PATH) < 1024:
+        logger.warning("PRIMARY_MODEL_MISSING_OR_EMPTY path=%s", MODEL_PATH)
         return None
     return _load_onnx_model(MODEL_PATH)
 
