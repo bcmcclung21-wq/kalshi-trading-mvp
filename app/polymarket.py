@@ -90,15 +90,16 @@ class PolymarketAPI:
 
     async def get_positions(self, limit=100):
         data_url = f"{self.data_base}/positions"
-        if not self.wallet_address:
+        wallet_address = self.wallet_address or os.getenv("WALLET_ADDRESS", "")
+        if not wallet_address:
             logger.warning("positions_fetch_skipped reason=missing_wallet limit=%s", limit)
             return []
-        logger.info("fetching_positions source=data-api wallet=%s limit=%s", self.wallet_address, limit)
+        logger.info("fetching_positions source=data-api wallet=%s limit=%s", wallet_address, limit)
 
         last_error: Exception | None = None
         for key in ("user", "wallet"):
             try:
-                d = await self.fetch_with_retry(data_url, params={key: self.wallet_address, "limit": limit})
+                d = await self.fetch_with_retry(data_url, params={key: wallet_address, "limit": limit})
                 logger.info("positions_fetch_ok param=%s", key)
                 return (d.get("positions", []) or d.get("data", []) or []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
             except httpx.HTTPStatusError as exc:

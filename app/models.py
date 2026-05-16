@@ -36,6 +36,9 @@ class Market(BaseModel):
     tags: list = []
     question: str = ""
     minutes_to_close: float | None = None
+    yes_token_id: str | None = None
+    no_token_id: str | None = None
+    token_id: str | None = None
     raw: dict = Field(default_factory=dict, repr=False)
 
 
