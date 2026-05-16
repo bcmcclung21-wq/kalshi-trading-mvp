@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     auto_execute: bool = os.getenv("AUTO_EXECUTE", "false").strip().lower() in ("1", "true", "yes", "on")
     dry_run: bool = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes", "on")
     enable_live_trading: bool = os.getenv("ENABLE_LIVE_TRADING", "false").strip().lower() in ("1", "true", "yes", "on")
+    paper_trade_mode: bool = os.getenv("PAPER_TRADE_MODE", "true").strip().lower() in ("1", "true", "yes", "on")
     allow_combos: bool = False
     max_orders_per_cycle: int = 5
     same_day_only: bool = True

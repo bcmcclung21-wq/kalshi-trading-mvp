@@ -13,11 +13,11 @@ PACKAGED_PREFIXES: tuple[str, ...] = (
 )
 
 CATEGORY_PREFIXES: Dict[str, tuple] = {
-    "sports": ("nba", "nfl", "mlb", "nhl", "ncaa", "epl", "ufc", "soccer", "wnba", "mls", "nwsl", "win the game", "winner", "vs", "match", "cover", "over", "under", "goal", "score"),
+    "sports": ("nba", "nfl", "mlb", "nhl", "ncaa", "epl", "ufc", "soccer", "wnba", "mls", "nwsl", "win the game", "winner", "vs", "match", "cover", "over", "under", "goal", "score", "stanley cup", "mvp", "finals", "championship", "hurricanes", "thunder", "cavaliers", "knicks", "spurs", "pistons"),
     "politics": ("election", "president", "senate", "house", "governor", "congress", "scotus", "dem", "rep"),
     "crypto": ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "xrp", "crypto", "altcoin", "link"),
     "economics": ("cpi", "ppi", "gdp", "jobs", "payroll", "inflation", "fed", "rate", "unemployment"),
-    "climate": ("temperature", "rain", "snow", "wind", "weather", "climate", "hurricane"),
+    "climate": ("temperature", "rain", "snow", "wind", "weather", "climate", "carbon", "warming", "paris agreement"),
 }
 
 DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")

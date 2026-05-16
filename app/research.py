@@ -187,14 +187,32 @@ def build_research_envelope(
         has_yes_pair = yes_bid > 0 and yes_ask > 0 and yes_ask >= yes_bid
         spread_ok = spread_cents <= 6.0
         near_term_ok = (minutes_to_close is not None) and (float(minutes_to_close) >= 20.0)
-        if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0 and False:
+        if has_yes_pair and spread_ok and near_term_ok and liq_q >= 45.0 and clarity_q >= 60.0:
             midpoint = max(0.01, min(0.99, (yes_bid + yes_ask) / 2.0))
-            fair_probability, edge = compute_side_edge(side, entry_price, midpoint)
-            edge_yes = midpoint - yes_ask
-            edge_no = midpoint - (1.0 - yes_bid)
+            bid_levels = market.get("yes_bids") or market.get("orderbook_yes_bids") or []
+            ask_levels = market.get("yes_asks") or market.get("orderbook_yes_asks") or []
+            if not bid_levels and isinstance(market.get("raw"), dict):
+                rb = market["raw"]
+                bid_levels = rb.get("yes_bids") or rb.get("bids") or []
+                ask_levels = rb.get("yes_asks") or rb.get("asks") or []
+            top_bids = bid_levels[:5] if isinstance(bid_levels, list) else []
+            top_asks = ask_levels[:5] if isinstance(ask_levels, list) else []
+            bid_vol = sum(float((b.get("qty") if isinstance(b, dict) else 0) or (b.get("size") if isinstance(b, dict) else 0) or 0.0) for b in top_bids)
+            ask_vol = sum(float((a.get("qty") if isinstance(a, dict) else 0) or (a.get("size") if isinstance(a, dict) else 0) or 0.0) for a in top_asks)
+            total_vol = bid_vol + ask_vol
+            imbalance = ((bid_vol - ask_vol) / total_vol) if total_vol > 0 else 0.0
+            spread = max(0.0, yes_ask - yes_bid)
+            fair = max(0.01, min(0.99, midpoint + (imbalance * spread * 0.5)))
+            fair_probability, edge = compute_side_edge(side, entry_price, fair)
+            edge_yes = fair - yes_ask
+            edge_no = (1.0 - fair) - no_ask if no_ask > 0 else fair - (1.0 - yes_bid)
+            if side == "YES":
+                edge = max(edge, edge_yes)
+            else:
+                edge = max(edge, edge_no)
             ladder_consistency = 0.5
             projection_supported = True
-            projection_model = "binary_quote_fallback_disabled"
+            projection_model = "binary_quote_fallback"
             tags.append("fallback_binary_quote")
 
     if not projection_supported:
